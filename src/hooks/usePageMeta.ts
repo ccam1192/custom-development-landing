@@ -5,6 +5,7 @@ interface PageMeta {
   description: string
   ogTitle?: string
   ogDescription?: string
+  ogUrl?: string
 }
 
 function setMetaTag(attr: 'name' | 'property', key: string, content: string) {
@@ -17,7 +18,7 @@ function setMetaTag(attr: 'name' | 'property', key: string, content: string) {
   el.setAttribute('content', content)
 }
 
-export function usePageMeta({ title, description, ogTitle, ogDescription }: PageMeta) {
+export function usePageMeta({ title, description, ogTitle, ogDescription, ogUrl }: PageMeta) {
   useEffect(() => {
     document.title = title
     setMetaTag('name', 'description', description)
@@ -25,5 +26,8 @@ export function usePageMeta({ title, description, ogTitle, ogDescription }: Page
     setMetaTag('property', 'og:description', ogDescription ?? description)
     setMetaTag('name', 'twitter:title', ogTitle ?? title)
     setMetaTag('name', 'twitter:description', ogDescription ?? description)
-  }, [title, description, ogTitle, ogDescription])
+    if (ogUrl) {
+      setMetaTag('property', 'og:url', ogUrl)
+    }
+  }, [title, description, ogTitle, ogDescription, ogUrl])
 }

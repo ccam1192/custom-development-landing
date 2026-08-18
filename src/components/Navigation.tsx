@@ -1,18 +1,23 @@
 import { useState } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Menu, X } from 'lucide-react'
+import SiteHashLink from './SiteHashLink'
+import { isCustomDevelopmentPath, PATHS } from '../config'
 
 const navItems = [
-  { label: 'Services', href: '#services' },
-  { label: 'Methodology', href: '#methodology' },
-  { label: 'Why Boardroom', href: '#why-boardroom' },
-  { label: 'Pricing', href: '#pricing' },
-  { label: 'FAQ', href: '#faq' },
-  { label: 'Contact', href: '#contact' },
-]
+  { label: 'Services', hash: '#services' },
+  { label: 'Methodology', hash: '#methodology' },
+  { label: 'Why Boardroom', hash: '#why-boardroom' },
+  { label: 'Pricing', hash: '#pricing' },
+  { label: 'FAQ', hash: '#faq' },
+  { label: 'Contact', hash: '#contact' },
+] as const
 
 export default function Navigation() {
   const [mobileOpen, setMobileOpen] = useState(false)
+  const { pathname } = useLocation()
+  const homeTo = isCustomDevelopmentPath(pathname) ? pathname : PATHS.customDevelopment
 
   return (
     <motion.nav
@@ -23,26 +28,34 @@ export default function Navigation() {
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-16">
-          <a href="#" className="text-xl font-bold text-gray-900 tracking-tight">
+          <Link
+            to={homeTo}
+            onClick={() => {
+              if (isCustomDevelopmentPath(pathname)) {
+                window.scrollTo({ top: 0, behavior: 'smooth' })
+              }
+            }}
+            className="text-xl font-bold text-gray-900 tracking-tight"
+          >
             Boardroom
-          </a>
+          </Link>
 
           <div className="hidden md:flex items-center gap-8">
             {navItems.map((item) => (
-              <a
+              <SiteHashLink
                 key={item.label}
-                href={item.href}
+                hash={item.hash}
                 className="text-sm font-medium text-gray-600 hover:text-primary transition-colors"
               >
                 {item.label}
-              </a>
+              </SiteHashLink>
             ))}
-            <a
-              href="#pricing"
+            <SiteHashLink
+              hash="#pricing"
               className="inline-flex items-center px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark transition-colors shadow-sm"
             >
               Book a Discovery Call
-            </a>
+            </SiteHashLink>
           </div>
 
           <button
@@ -65,22 +78,22 @@ export default function Navigation() {
           >
             <div className="px-4 py-4 space-y-3">
               {navItems.map((item) => (
-                <a
+                <SiteHashLink
                   key={item.label}
-                  href={item.href}
+                  hash={item.hash}
                   onClick={() => setMobileOpen(false)}
                   className="block text-sm font-medium text-gray-600 hover:text-primary py-2"
                 >
                   {item.label}
-                </a>
+                </SiteHashLink>
               ))}
-              <a
-                href="#pricing"
+              <SiteHashLink
+                hash="#pricing"
                 onClick={() => setMobileOpen(false)}
                 className="block w-full text-center px-4 py-2.5 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark transition-colors"
               >
                 Book a Discovery Call
-              </a>
+              </SiteHashLink>
             </div>
           </motion.div>
         )}

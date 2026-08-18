@@ -1,3 +1,5 @@
+import SiteHashLink from './SiteHashLink'
+
 export default function Footer() {
   return (
     <footer className="bg-gray-900 text-gray-400 py-12">
@@ -19,19 +21,29 @@ export default function Footer() {
             <h4 className="text-sm font-semibold text-white mb-3">Links</h4>
             <ul className="space-y-2 text-sm">
               <li>
-                <a href="#services" className="hover:text-white transition-colors">Services</a>
+                <SiteHashLink hash="#services" className="hover:text-white transition-colors">
+                  Services
+                </SiteHashLink>
               </li>
               <li>
-                <a href="#methodology" className="hover:text-white transition-colors">Methodology</a>
+                <SiteHashLink hash="#methodology" className="hover:text-white transition-colors">
+                  Methodology
+                </SiteHashLink>
               </li>
               <li>
-                <a href="#pricing" className="hover:text-white transition-colors">Pricing</a>
+                <SiteHashLink hash="#pricing" className="hover:text-white transition-colors">
+                  Pricing
+                </SiteHashLink>
               </li>
               <li>
-                <a href="#faq" className="hover:text-white transition-colors">FAQ</a>
+                <SiteHashLink hash="#faq" className="hover:text-white transition-colors">
+                  FAQ
+                </SiteHashLink>
               </li>
               <li>
-                <a href="#contact" className="hover:text-white transition-colors">Contact</a>
+                <SiteHashLink hash="#contact" className="hover:text-white transition-colors">
+                  Contact
+                </SiteHashLink>
               </li>
             </ul>
           </div>
