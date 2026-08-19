@@ -3,6 +3,7 @@ import {
   BarChart3, Layout, Users, Bot, Calendar, Bell,
   TrendingUp, CheckCircle2
 } from 'lucide-react'
+import ClientLogos from './ClientLogos'
 
 function DashboardMockup() {
   return (
@@ -185,6 +186,14 @@ export default function Hero() {
               <div className="text-sm text-gray-500 mt-1">{stat.label}</div>
             </div>
           ))}
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.65 }}
+        >
+          <ClientLogos />
         </motion.div>
       </div>
     </section>
