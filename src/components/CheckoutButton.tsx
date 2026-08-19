@@ -1,5 +1,5 @@
 import { ArrowRight } from 'lucide-react'
-import { STRIPE_CHECKOUT_URL } from '../config'
+import { PACKAGE_PRICE_LABEL, STRIPE_CHECKOUT_URL } from '../config'
 
 type Variant = 'primary' | 'card' | 'light'
 
@@ -23,7 +23,7 @@ export default function CheckoutButton({ variant = 'primary', className = '' }: 
       href={STRIPE_CHECKOUT_URL}
       className={`inline-flex items-center justify-center gap-2 transition-all ${variantClass[variant]} ${className}`}
     >
-      Get Started — $500
+      Get Started — {PACKAGE_PRICE_LABEL}
       <ArrowRight size={variant === 'primary' ? 18 : 20} />
     </a>
   )

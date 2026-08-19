@@ -1,6 +1,7 @@
 import { motion, useInView } from 'framer-motion'
 import { useRef } from 'react'
 import { MessageSquare, CalendarDays, FileText, Compass } from 'lucide-react'
+import { PACKAGE_PRICE_LABEL } from '../config'
 
 const items = [
   {
@@ -43,10 +44,10 @@ export default function RequirementsIncluded() {
           className="text-center mb-14"
         >
           <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-4">
-            What's Included for $500
+            What's Included for {PACKAGE_PRICE_LABEL}
           </h2>
           <p className="text-gray-500 max-w-2xl mx-auto">
-            Our $500 Requirements Gathering Package turns your business idea into a clear, documented
+            Our {PACKAGE_PRICE_LABEL} Requirements Gathering Package turns your business idea into a clear, documented
             software specification—so you know what you're building, we understand exactly what to
             build, and you can make an informed decision about the full development project.
           </p>

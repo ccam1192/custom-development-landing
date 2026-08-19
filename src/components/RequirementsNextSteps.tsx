@@ -2,12 +2,13 @@ import { motion, useInView } from 'framer-motion'
 import { useRef } from 'react'
 import { CreditCard, Calendar, FileText } from 'lucide-react'
 import CheckoutButton from './CheckoutButton'
+import { PACKAGE_PRICE_LABEL } from '../config'
 
 const steps = [
   {
     icon: CreditCard,
     title: 'Purchase the Package',
-    description: 'Complete the $500 checkout.',
+    description: `Complete the ${PACKAGE_PRICE_LABEL} checkout.`,
   },
   {
     icon: Calendar,

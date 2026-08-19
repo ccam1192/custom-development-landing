@@ -10,10 +10,11 @@ import RequirementsNextSteps from '../components/RequirementsNextSteps'
 import RequirementsFinalCTA from '../components/RequirementsFinalCTA'
 import Footer from '../components/Footer'
 import { usePageMeta } from '../hooks/usePageMeta'
+import { PACKAGE_PRICE_LABEL } from '../config'
 
 const TITLE = 'Requirements Gathering for Custom Software | Boardroom'
 const DESCRIPTION =
-  'Define your custom software project before development begins. Our $500 Requirements Gathering Package includes up to two discovery sessions and a detailed requirements document to clarify your project and establish a foundation for development.'
+  `Define your custom software project before development begins. Our ${PACKAGE_PRICE_LABEL} Requirements Gathering Package includes up to two discovery sessions and a detailed requirements document to clarify your project and establish a foundation for development.`
 
 export default function RequirementsGatheringPage() {
   usePageMeta({

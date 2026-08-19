@@ -1,7 +1,7 @@
 import { motion, useInView } from 'framer-motion'
 import { useRef } from 'react'
 import { ArrowRight } from 'lucide-react'
-import { BOOK_A_CALL_URL } from '../config'
+import { BOOK_A_CALL_URL, PACKAGE_PRICE_LABEL } from '../config'
 import CheckoutButton from './CheckoutButton'
 
 export default function RequirementsFinalCTA() {
@@ -26,7 +26,7 @@ export default function RequirementsFinalCTA() {
             Let's turn it into a plan.
           </p>
           <p className="text-blue-100/80 text-lg max-w-2xl mx-auto mb-10">
-            Start with clarity. For $500, we'll help you define what you're building and create the
+            Start with clarity. For {PACKAGE_PRICE_LABEL}, we'll help you define what you're building and create the
             requirements document that can serve as the foundation for development.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">

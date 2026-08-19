@@ -1,6 +1,7 @@
 import { motion, useInView } from 'framer-motion'
 import { useRef } from 'react'
 import { FileCheck } from 'lucide-react'
+import { PACKAGE_PRICE_LABEL } from '../config'
 
 export default function RequirementsObjection() {
   const ref = useRef(null)
@@ -16,7 +17,7 @@ export default function RequirementsObjection() {
           className="text-center"
         >
           <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-6">
-            Why Pay $500 Before Getting a Development Proposal?
+            Why Pay {PACKAGE_PRICE_LABEL} Before Getting a Development Proposal?
           </h2>
           <div className="space-y-4 text-gray-600 leading-relaxed">
             <p className="text-lg font-medium text-gray-800">

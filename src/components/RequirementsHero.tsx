@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { Check } from 'lucide-react'
-import { BOOK_A_CALL_URL } from '../config'
+import { BOOK_A_CALL_URL, PACKAGE_PRICE_LABEL } from '../config'
 import CheckoutButton from './CheckoutButton'
 
 const inclusions = [
@@ -20,7 +20,7 @@ function PricingCard() {
             Fixed Price
           </p>
           <div className="text-5xl sm:text-6xl font-bold text-gray-900 tracking-tight mb-2">
-            $500
+            {PACKAGE_PRICE_LABEL}
           </div>
           <h2 className="text-lg font-semibold text-gray-900 mb-6">
             Requirements Gathering Package
@@ -62,7 +62,7 @@ export default function RequirementsHero() {
             </h1>
             <p className="text-lg text-gray-600 leading-relaxed mb-6 max-w-xl">
               Turn your software idea into a clear, documented plan before development begins. Our
-              fixed-price $500 Requirements Gathering Package gives you the clarity you need to
+              fixed-price {PACKAGE_PRICE_LABEL} Requirements Gathering Package gives you the clarity you need to
               understand what to build, what it will take, and what the full project is likely to cost.
             </p>
             <p className="text-base text-gray-500 leading-relaxed mb-8 max-w-xl">

@@ -2,9 +2,11 @@
  * Site-wide configuration.
  *
  * Stripe: replace STRIPE_CHECKOUT_URL in this file only.
- * Every "Get Started — $500" purchase CTA reads from this constant.
+ * Every "Get Started" purchase CTA reads from this constant.
  */
-export const STRIPE_CHECKOUT_URL = 'https://buy.stripe.com/14AcN48gV5fAapK5p83gk05'
+export const STRIPE_CHECKOUT_URL = 'https://buy.stripe.com/5kQ9AS7cRfUe1Te18S3gk06'
+
+export const PACKAGE_PRICE_LABEL = '$2,500'
 
 export const BOOK_A_CALL_URL = 'https://meetings-na2.hubspot.com/charles-camisasca'
 
