@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Menu, X } from 'lucide-react'
 import SiteHashLink from './SiteHashLink'
-import { isCustomDevelopmentPath, PATHS } from '../config'
+import { isCustomDevelopmentPath, PATHS, BOOK_A_CALL_URL } from '../config'
 
 const navItems = [
   { label: 'Services', hash: '#services' },
@@ -18,6 +18,7 @@ export default function Navigation() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const { pathname } = useLocation()
   const homeTo = isCustomDevelopmentPath(pathname) ? pathname : PATHS.customDevelopment
+  const isPartnerPage = pathname === PATHS.technologyPartners
 
   return (
     <motion.nav
@@ -41,21 +42,54 @@ export default function Navigation() {
           </Link>
 
           <div className="hidden md:flex items-center gap-8">
-            {navItems.map((item) => (
-              <SiteHashLink
-                key={item.label}
-                hash={item.hash}
-                className="text-sm font-medium text-gray-600 hover:text-primary transition-colors"
-              >
-                {item.label}
-              </SiteHashLink>
-            ))}
-            <SiteHashLink
-              hash="#pricing"
-              className="inline-flex items-center px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark transition-colors shadow-sm"
-            >
-              Book a Discovery Call
-            </SiteHashLink>
+            {isPartnerPage ? (
+              <>
+                <a
+                  href="#partnership-flow"
+                  className="text-sm font-medium text-gray-600 hover:text-primary transition-colors"
+                >
+                  How It Works
+                </a>
+                <Link
+                  to={PATHS.customDevelopment}
+                  className="text-sm font-medium text-gray-600 hover:text-primary transition-colors"
+                >
+                  Custom Development
+                </Link>
+                <a
+                  href={BOOK_A_CALL_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark transition-colors shadow-sm"
+                >
+                  Talk About a Partnership
+                </a>
+              </>
+            ) : (
+              <>
+                {navItems.map((item) => (
+                  <SiteHashLink
+                    key={item.label}
+                    hash={item.hash}
+                    className="text-sm font-medium text-gray-600 hover:text-primary transition-colors"
+                  >
+                    {item.label}
+                  </SiteHashLink>
+                ))}
+                <Link
+                  to={PATHS.technologyPartners}
+                  className="text-sm font-medium text-gray-600 hover:text-primary transition-colors"
+                >
+                  Partners
+                </Link>
+                <SiteHashLink
+                  hash="#pricing"
+                  className="inline-flex items-center px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark transition-colors shadow-sm"
+                >
+                  Book a Discovery Call
+                </SiteHashLink>
+              </>
+            )}
           </div>
 
           <button
@@ -77,23 +111,60 @@ export default function Navigation() {
             className="md:hidden border-t border-gray-200/50 bg-white/95 backdrop-blur-lg"
           >
             <div className="px-4 py-4 space-y-3">
-              {navItems.map((item) => (
-                <SiteHashLink
-                  key={item.label}
-                  hash={item.hash}
-                  onClick={() => setMobileOpen(false)}
-                  className="block text-sm font-medium text-gray-600 hover:text-primary py-2"
-                >
-                  {item.label}
-                </SiteHashLink>
-              ))}
-              <SiteHashLink
-                hash="#pricing"
-                onClick={() => setMobileOpen(false)}
-                className="block w-full text-center px-4 py-2.5 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark transition-colors"
-              >
-                Book a Discovery Call
-              </SiteHashLink>
+              {isPartnerPage ? (
+                <>
+                  <a
+                    href="#partnership-flow"
+                    onClick={() => setMobileOpen(false)}
+                    className="block text-sm font-medium text-gray-600 hover:text-primary py-2"
+                  >
+                    How It Works
+                  </a>
+                  <Link
+                    to={PATHS.customDevelopment}
+                    onClick={() => setMobileOpen(false)}
+                    className="block text-sm font-medium text-gray-600 hover:text-primary py-2"
+                  >
+                    Custom Development
+                  </Link>
+                  <a
+                    href={BOOK_A_CALL_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => setMobileOpen(false)}
+                    className="block w-full text-center px-4 py-2.5 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark transition-colors"
+                  >
+                    Talk About a Partnership
+                  </a>
+                </>
+              ) : (
+                <>
+                  {navItems.map((item) => (
+                    <SiteHashLink
+                      key={item.label}
+                      hash={item.hash}
+                      onClick={() => setMobileOpen(false)}
+                      className="block text-sm font-medium text-gray-600 hover:text-primary py-2"
+                    >
+                      {item.label}
+                    </SiteHashLink>
+                  ))}
+                  <Link
+                    to={PATHS.technologyPartners}
+                    onClick={() => setMobileOpen(false)}
+                    className="block text-sm font-medium text-gray-600 hover:text-primary py-2"
+                  >
+                    Partners
+                  </Link>
+                  <SiteHashLink
+                    hash="#pricing"
+                    onClick={() => setMobileOpen(false)}
+                    className="block w-full text-center px-4 py-2.5 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark transition-colors"
+                  >
+                    Book a Discovery Call
+                  </SiteHashLink>
+                </>
+              )}
             </div>
           </motion.div>
         )}

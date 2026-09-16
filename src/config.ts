@@ -15,6 +15,7 @@ export const PATHS = {
   customDevelopment: '/custom-development',
   requirementsGathering: '/requirements-gathering',
   bookACall: '/book-a-call',
+  technologyPartners: '/technology-partners',
 } as const
 
 export function isCustomDevelopmentPath(pathname: string) {

@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
 import HomePage from './pages/HomePage'
 import BookACallPage from './pages/BookACallPage'
 import RequirementsGatheringPage from './pages/RequirementsGatheringPage'
+import TechnologyPartnersPage from './pages/TechnologyPartnersPage'
 
 function ScrollToHash() {
   const { pathname, hash } = useLocation()
@@ -33,6 +34,7 @@ function AppRoutes() {
         <Route path="/custom-development" element={<HomePage />} />
         <Route path="/book-a-call" element={<BookACallPage />} />
         <Route path="/requirements-gathering" element={<RequirementsGatheringPage />} />
+        <Route path="/technology-partners" element={<TechnologyPartnersPage />} />
       </Routes>
     </>
   )

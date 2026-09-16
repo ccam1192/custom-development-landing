@@ -1,4 +1,6 @@
+import { Link } from 'react-router-dom'
 import SiteHashLink from './SiteHashLink'
+import { PATHS } from '../config'
 
 export default function Footer() {
   return (
@@ -44,6 +46,11 @@ export default function Footer() {
                 <SiteHashLink hash="#contact" className="hover:text-white transition-colors">
                   Contact
                 </SiteHashLink>
+              </li>
+              <li>
+                <Link to={PATHS.technologyPartners} className="hover:text-white transition-colors">
+                  Technology Partners
+                </Link>
               </li>
             </ul>
           </div>
