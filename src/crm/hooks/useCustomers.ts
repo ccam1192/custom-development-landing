@@ -104,21 +104,50 @@ export function useCustomers(): UseCustomersReturn {
       setCustomers((data ?? []) as CrmCustomer[])
       setPagination((prev) => ({ ...prev, total: count ?? 0 }))
 
-      // Totals for the full filtered set (not just the current page)
-      let sumQuery = supabase
-        .from('crm_customers')
-        .select('mrr:effective_mrr.sum(), revenue:effective_total_revenue.sum()')
-      sumQuery = applyCustomerFilters(sumQuery, filters)
-      const { data: sumData, error: sumErr } = await sumQuery
-      if (fetchId !== fetchIdRef.current) return
-      if (!sumErr) {
-        const row = (sumData?.[0] ?? {}) as { mrr?: number | null; revenue?: number | null }
-        setFilteredTotals({
-          mrr: Number(row.mrr ?? 0),
-          revenue: Number(row.revenue ?? 0),
-          filtered: hasActiveFilters(filters),
-        })
+      // Sum MRR/revenue across the full filtered set.
+      // Avoid PostgREST .sum() — generated columns often aren't in the API
+      // schema cache, which was leaving the footer at $0 with no error shown.
+      const PAGE = 1000
+      let mrr = 0
+      let revenue = 0
+      let fromIdx = 0
+      let useGenerated = true
+
+      for (;;) {
+        const columns = useGenerated
+          ? 'mrr_override, calculated_mrr, total_revenue_override, calculated_total_revenue, effective_mrr, effective_total_revenue'
+          : 'mrr_override, calculated_mrr, total_revenue_override, calculated_total_revenue'
+        let totQuery = supabase.from('crm_customers').select(columns)
+        totQuery = applyCustomerFilters(totQuery, filters)
+        const { data: totRows, error: totErr } = await totQuery.range(fromIdx, fromIdx + PAGE - 1)
+        if (fetchId !== fetchIdRef.current) return
+
+        if (totErr && useGenerated) {
+          useGenerated = false
+          continue
+        }
+        if (totErr) break
+
+        for (const c of totRows ?? []) {
+          mrr += Number(
+            (useGenerated ? c.effective_mrr : null) ?? c.mrr_override ?? c.calculated_mrr ?? 0
+          )
+          revenue += Number(
+            (useGenerated ? c.effective_total_revenue : null) ??
+              c.total_revenue_override ??
+              c.calculated_total_revenue ??
+              0
+          )
+        }
+        if (!totRows || totRows.length < PAGE) break
+        fromIdx += PAGE
       }
+      if (fetchId !== fetchIdRef.current) return
+      setFilteredTotals({
+        mrr,
+        revenue,
+        filtered: hasActiveFilters(filters),
+      })
     } catch (e) {
       if (fetchId === fetchIdRef.current) {
         setError(e instanceof Error ? e.message : 'Failed to fetch customers')

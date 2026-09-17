@@ -1,9 +1,12 @@
 /**
  * Shopify Partner API Integration
  *
- * Uses the root `transactions` query (App.transactions was removed)
- * to fetch actual collected revenue: usage sales, subscription sales,
- * adjustments, and credits.
+ * Schema notes (Partner API 2026-01, verified against shopify.dev):
+ *   - transactions lives on QueryRoot, NOT App
+ *   - PageInfo only has hasNextPage / hasPreviousPage (no endCursor)
+ *   - Pagination cursor is on TransactionEdge.cursor
+ *   - Transaction interface fields: id, createdAt
+ *   - Sale types expose chargeId, grossAmount, netAmount, shopifyFee, shop
  *
  * Required env:
  *   SHOPIFY_PARTNER_ORG_ID
@@ -44,7 +47,7 @@ interface ShopifyTransaction {
 interface TransactionsPage {
   transactions: ShopifyTransaction[]
   hasNextPage: boolean
-  endCursor: string | null
+  cursor: string | null
 }
 
 async function partnerQuery<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
@@ -70,77 +73,58 @@ async function partnerQuery<T>(query: string, variables?: Record<string, unknown
 
   const json = await res.json()
   if (json.errors?.length) {
-    throw new Error(`Shopify Partner API: ${json.errors[0].message}`)
+    const messages = json.errors.map((e: { message: string }) => e.message).join('; ')
+    throw new Error(`Shopify Partner API: ${messages}`)
   }
 
   return json.data
 }
 
-const TRANSACTION_FIELDS = `
-  id
-  createdAt
-  __typename
-  ... on AppUsageSale {
-    chargeId
-    grossAmount { amount currencyCode }
-    netAmount { amount currencyCode }
-    shopifyFee { amount currencyCode }
-    shop { id myshopifyDomain name }
-  }
-  ... on AppSubscriptionSale {
-    chargeId
-    grossAmount { amount currencyCode }
-    netAmount { amount currencyCode }
-    shopifyFee { amount currencyCode }
-    shop { id myshopifyDomain name }
-  }
-  ... on AppOneTimeSale {
-    chargeId
-    grossAmount { amount currencyCode }
-    netAmount { amount currencyCode }
-    shopifyFee { amount currencyCode }
-    shop { id myshopifyDomain name }
-  }
-  ... on AppSaleAdjustment {
-    grossAmount { amount currencyCode }
-    netAmount { amount currencyCode }
-    shopifyFee { amount currencyCode }
-    shop { id myshopifyDomain name }
-  }
-  ... on AppSaleCredit {
-    grossAmount { amount currencyCode }
-    netAmount { amount currencyCode }
-    shopifyFee { amount currencyCode }
-    shop { id myshopifyDomain name }
-  }
+/** Fields shared by all App*Sale types in 2026-01 */
+const SALE_FIELDS = `
+  chargeId
+  grossAmount { amount currencyCode }
+  netAmount { amount currencyCode }
+  shopifyFee { amount currencyCode }
+  shop { id myshopifyDomain name }
 `
 
 /**
- * Fetch collected-revenue transactions for the app.
+ * Fetch one page of collected-revenue transactions for the app.
  *
- * Partner API 2025+: `transactions` lives on QueryRoot, not App.
+ * Partner API PageInfo has no endCursor — use edges { cursor }.
  */
 export async function getAppTransactions(
   after?: string | null,
   createdAtMin?: string
 ): Promise<TransactionsPage> {
+  const extraVar = createdAtMin ? ', $createdAtMin: DateTime' : ''
+  const extraArg = createdAtMin ? 'createdAtMin: $createdAtMin' : ''
+
   const query = `
-    query AppTransactions($appId: ID!, $after: String, $types: [TransactionType!], $createdAtMin: DateTime) {
+    query AppTransactions($appId: ID!, $after: String, $types: [TransactionType!]${extraVar}) {
       transactions(
         first: 100
         after: $after
         appId: $appId
         types: $types
-        createdAtMin: $createdAtMin
+        ${extraArg}
       ) {
         edges {
+          cursor
           node {
-            ${TRANSACTION_FIELDS}
+            __typename
+            id
+            createdAt
+            ... on AppUsageSale { ${SALE_FIELDS} }
+            ... on AppSubscriptionSale { ${SALE_FIELDS} }
+            ... on AppOneTimeSale { ${SALE_FIELDS} }
+            ... on AppSaleAdjustment { ${SALE_FIELDS} }
+            ... on AppSaleCredit { ${SALE_FIELDS} }
           }
         }
         pageInfo {
           hasNextPage
-          endCursor
         }
       }
     }
@@ -148,9 +132,9 @@ export async function getAppTransactions(
 
   const data = await partnerQuery<{
     transactions: {
-      edges: Array<{ node: ShopifyTransaction }>
-      pageInfo: { hasNextPage: boolean; endCursor: string | null }
-    }
+      edges: Array<{ cursor: string; node: ShopifyTransaction }>
+      pageInfo: { hasNextPage: boolean }
+    } | null
   }>(query, {
     appId: `gid://partners/App/${APP_ID}`,
     after: after || null,
@@ -161,7 +145,7 @@ export async function getAppTransactions(
       'APP_SALE_ADJUSTMENT',
       'APP_SALE_CREDIT',
     ],
-    createdAtMin: createdAtMin ?? null,
+    ...(createdAtMin ? { createdAtMin } : {}),
   })
 
   const txns = data.transactions
@@ -169,10 +153,12 @@ export async function getAppTransactions(
     throw new Error('Shopify Partner API returned no transactions connection')
   }
 
+  const lastEdge = txns.edges[txns.edges.length - 1]
+
   return {
     transactions: txns.edges.map((e) => e.node),
     hasNextPage: txns.pageInfo.hasNextPage,
-    endCursor: txns.pageInfo.endCursor,
+    cursor: lastEdge?.cursor ?? null,
   }
 }
 
@@ -182,12 +168,18 @@ export async function getAllAppTransactions(
   const all: ShopifyTransaction[] = []
   let cursor: string | null = null
   let hasNext = true
+  let pages = 0
+  const MAX_PAGES = 500
 
   while (hasNext) {
     const page = await getAppTransactions(cursor, createdAtMin)
     all.push(...page.transactions)
-    hasNext = page.hasNextPage
-    cursor = page.endCursor
+    hasNext = page.hasNextPage && !!page.cursor
+    cursor = page.cursor
+    pages++
+    if (pages >= MAX_PAGES) {
+      throw new Error(`Shopify sync stopped after ${MAX_PAGES} pages (${all.length} transactions) to avoid a runaway loop`)
+    }
   }
 
   return all
