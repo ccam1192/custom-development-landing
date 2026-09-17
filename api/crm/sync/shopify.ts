@@ -1,12 +1,22 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { requireAuth } from '../../_lib/auth.js'
 import { supabaseAdmin, fetchAllRows } from '../../_lib/supabase-admin.js'
-import { isShopifyConfigured, getAllAppTransactions } from '../../_lib/shopify.js'
+import {
+  isShopifyConfigured,
+  getAppTransactions,
+  partnerRateLimitPause,
+  type ShopifyTransaction,
+} from '../../_lib/shopify.js'
 
 export const config = { maxDuration: 300 }
 
+/** Stay well under Vercel timeout. Browser will call this endpoint again to resume. */
+const TIME_BUDGET_MS = 45_000
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
+
+  const started = Date.now()
 
   try {
     const user = await requireAuth(req, res)
@@ -18,43 +28,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       })
     }
 
+    const { data: syncState } = await supabaseAdmin
+      .from('crm_sync_state')
+      .select('sync_cursor, last_successful_at')
+      .eq('provider', 'shopify')
+      .single()
+
+    let cursor: string | null = syncState?.sync_cursor ?? null
+    let createdAtMin: string | undefined
+    if (!cursor && syncState?.last_successful_at) {
+      createdAtMin = syncState.last_successful_at
+    }
+
     const { data: syncLog } = await supabaseAdmin
       .from('crm_sync_logs')
-      .insert({ provider: 'shopify', sync_type: req.body?.incremental ? 'incremental' : 'full' })
+      .insert({
+        provider: 'shopify',
+        sync_type: cursor ? 'resume' : createdAtMin ? 'incremental' : 'full',
+      })
       .select('id')
       .single()
 
     const logId = syncLog?.id
-    let processed = 0, created = 0, errors = 0
+    let processed = 0
+    let created = 0
+    let errors = 0
     const errorDetails: Array<{ message: string; record?: string }> = []
+    let pages = 0
+    let complete = false
 
     await supabaseAdmin
       .from('crm_sync_state')
-      .update({ status: 'running', last_sync_at: new Date().toISOString() })
+      .update({ status: 'running', last_sync_at: new Date().toISOString(), error_message: null })
       .eq('provider', 'shopify')
-
-    // Get last sync cursor for incremental sync
-    let createdAtMin: string | undefined
-    if (req.body?.incremental) {
-      const { data: syncState } = await supabaseAdmin
-        .from('crm_sync_state')
-        .select('last_successful_at')
-        .eq('provider', 'shopify')
-        .single()
-      if (syncState?.last_successful_at) {
-        createdAtMin = syncState.last_successful_at
-      }
-    }
-
-    console.log('[Shopify Sync] Fetching transactions...')
-    const transactions = await getAllAppTransactions(createdAtMin)
-    console.log(`[Shopify Sync] Got ${transactions.length} transactions`)
 
     const shopCustomers = await fetchAllRows<{
       id: string
       shopify_shop_domain: string | null
       store_url: string | null
     }>('crm_customers', 'id, shopify_shop_domain, store_url')
+
     const crmByDomain = new Map<string, string>()
     for (const c of shopCustomers) {
       if (c.shopify_shop_domain) crmByDomain.set(c.shopify_shop_domain.toLowerCase(), c.id)
@@ -64,117 +77,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    for (const tx of transactions) {
-      processed++
-      try {
-        let txType: string
-        const amount = parseFloat(tx.grossAmount?.amount ?? tx.netAmount?.amount ?? '0')
+    while (Date.now() - started < TIME_BUDGET_MS) {
+      if (pages > 0) await partnerRateLimitPause()
 
-        switch (tx.__typename) {
-          case 'AppUsageSale':
-            txType = 'app_usage_sale'
-            break
-          case 'AppSaleAdjustment':
-            txType = 'app_sale_adjustment'
-            break
-          case 'AppSaleCredit':
-            txType = 'app_sale_credit'
-            break
-          default:
-            txType = 'payment'
-        }
+      const page = await getAppTransactions(cursor, createdAtMin)
+      pages++
 
-        const status = amount >= 0 ? 'succeeded' : 'adjusted'
-        const domain = tx.shop?.myshopifyDomain?.toLowerCase() ?? null
-        const crmCustomerId = domain ? crmByDomain.get(domain) ?? null : null
+      const rows = page.transactions.map((tx) => toTxnRow(tx, crmByDomain))
+      processed += rows.length
 
-        await supabaseAdmin
+      for (let i = 0; i < rows.length; i += 200) {
+        const batch = rows.slice(i, i + 200)
+        const { error: upsertErr } = await supabaseAdmin
           .from('crm_revenue_transactions')
-          .upsert(
-            {
-              provider: 'shopify',
-              provider_transaction_id: tx.id,
-              crm_customer_id: crmCustomerId,
-              amount: Math.abs(amount),
-              currency: tx.grossAmount?.currencyCode ?? 'USD',
-              transaction_date: tx.createdAt,
-              status: status as 'succeeded' | 'adjusted',
-              transaction_type: txType as 'app_usage_sale' | 'app_sale_adjustment' | 'app_sale_credit' | 'payment',
-              shopify_charge_id: tx.chargeId ?? null,
-              shopify_shop_domain: tx.shop?.myshopifyDomain ?? null,
-              shopify_gross_amount: tx.grossAmount ? parseFloat(tx.grossAmount.amount) : null,
-              shopify_net_amount: tx.netAmount ? parseFloat(tx.netAmount.amount) : null,
-              shopify_fee: tx.shopifyFee ? parseFloat(tx.shopifyFee.amount) : null,
-              shopify_processing_fee: null,
-              shopify_regulatory_fee: null,
-              description: `Shopify ${tx.__typename} for ${tx.shop?.name ?? tx.shop?.myshopifyDomain ?? 'unknown shop'}`,
-            },
-            { onConflict: 'provider,provider_transaction_id' }
-          )
-        created++
-      } catch (e) {
-        errors++
-        errorDetails.push({
-          message: e instanceof Error ? e.message : String(e),
-          record: tx.id,
-        })
+          .upsert(batch, { onConflict: 'provider,provider_transaction_id' })
+        if (upsertErr) {
+          errors++
+          errorDetails.push({ message: `Upsert batch: ${upsertErr.message}` })
+        } else {
+          created += batch.length
+        }
+      }
+
+      cursor = page.cursor
+      await supabaseAdmin
+        .from('crm_sync_state')
+        .update({ sync_cursor: cursor, last_sync_at: new Date().toISOString() })
+        .eq('provider', 'shopify')
+
+      if (!page.hasNextPage || !page.cursor) {
+        complete = true
+        break
       }
     }
 
-    // Recalculate revenue for affected shops
-    const shopDomains = [...new Set(transactions.map((t) => t.shop?.myshopifyDomain).filter(Boolean))]
-    for (const domain of shopDomains) {
-      try {
-        const { data: txns } = await supabaseAdmin
-          .from('crm_revenue_transactions')
-          .select('amount, transaction_type')
-          .eq('provider', 'shopify')
-          .eq('shopify_shop_domain', domain)
-          .in('status', ['succeeded', 'adjusted'])
-
-        let shopRevenue = 0
-        for (const t of txns ?? []) {
-          if (t.transaction_type === 'app_sale_adjustment' || t.transaction_type === 'app_sale_credit') {
-            shopRevenue -= Math.abs(t.amount)
-          } else {
-            shopRevenue += t.amount
-          }
-        }
-
-        const { data: customer } = await supabaseAdmin
-          .from('crm_customers')
-          .select('id')
-          .eq('shopify_shop_domain', domain)
-          .limit(1)
-          .single()
-
-        if (customer) {
-          // Get Stripe revenue for combined total
-          const { data: stripeTxns } = await supabaseAdmin
-            .from('crm_revenue_transactions')
-            .select('amount')
-            .eq('crm_customer_id', customer.id)
-            .eq('provider', 'stripe')
-            .eq('status', 'succeeded')
-
-          const stripeRevenue = (stripeTxns ?? []).reduce((sum, t) => sum + t.amount, 0)
-
-          await supabaseAdmin
-            .from('crm_customers')
-            .update({ calculated_total_revenue: shopRevenue + stripeRevenue })
-            .eq('id', customer.id)
-        }
-      } catch (e) {
-        errorDetails.push({
-          message: `Revenue recalc ${domain}: ${e instanceof Error ? e.message : String(e)}`,
+    if (complete) {
+      await recalcShopifyRevenue(errorDetails)
+      await supabaseAdmin
+        .from('crm_sync_state')
+        .update({
+          status: 'idle',
+          sync_cursor: null,
+          last_successful_at: new Date().toISOString(),
+          error_message: null,
         })
-      }
+        .eq('provider', 'shopify')
+    } else {
+      await supabaseAdmin
+        .from('crm_sync_state')
+        .update({ status: 'idle', error_message: null })
+        .eq('provider', 'shopify')
     }
-
-    await supabaseAdmin
-      .from('crm_sync_state')
-      .update({ status: 'idle', last_successful_at: new Date().toISOString(), error_message: null })
-      .eq('provider', 'shopify')
 
     if (logId) {
       await supabaseAdmin
@@ -186,11 +139,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           records_created: created,
           errors,
           error_details: errorDetails,
+          metadata: { pages, complete, resumedFromCursor: !!syncState?.sync_cursor },
         })
         .eq('id', logId)
     }
 
-    return res.json({ success: true, processed, created, errors })
+    return res.json({
+      success: true,
+      complete,
+      continue: !complete,
+      processed,
+      created,
+      errors,
+      pages,
+      durationMs: Date.now() - started,
+    })
   } catch (e) {
     const message = e instanceof Error ? `${e.message}\n${e.stack}` : String(e)
     console.error('[Shopify Sync] Fatal error:', message)
@@ -203,5 +166,96 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     } catch { /* ignore */ }
 
     return res.status(500).json({ error: message.substring(0, 1000) })
+  }
+}
+
+function toTxnRow(tx: ShopifyTransaction, crmByDomain: Map<string, string>) {
+  const amount = parseFloat(tx.grossAmount?.amount ?? tx.netAmount?.amount ?? '0')
+  let txType = 'payment'
+  switch (tx.__typename) {
+    case 'AppUsageSale':
+      txType = 'app_usage_sale'
+      break
+    case 'AppSaleAdjustment':
+      txType = 'app_sale_adjustment'
+      break
+    case 'AppSaleCredit':
+      txType = 'app_sale_credit'
+      break
+  }
+  const domain = tx.shop?.myshopifyDomain?.toLowerCase() ?? null
+  return {
+    provider: 'shopify',
+    provider_transaction_id: tx.id,
+    crm_customer_id: domain ? crmByDomain.get(domain) ?? null : null,
+    amount: Math.abs(amount),
+    currency: tx.grossAmount?.currencyCode ?? tx.netAmount?.currencyCode ?? 'USD',
+    transaction_date: tx.createdAt,
+    status: amount >= 0 ? 'succeeded' : 'adjusted',
+    transaction_type: txType,
+    shopify_charge_id: tx.chargeId ?? null,
+    shopify_shop_domain: tx.shop?.myshopifyDomain ?? null,
+    shopify_gross_amount: tx.grossAmount ? parseFloat(tx.grossAmount.amount) : null,
+    shopify_net_amount: tx.netAmount ? parseFloat(tx.netAmount.amount) : null,
+    shopify_fee: tx.shopifyFee ? parseFloat(tx.shopifyFee.amount) : null,
+    description: `Shopify ${tx.__typename} for ${tx.shop?.name ?? tx.shop?.myshopifyDomain ?? 'unknown shop'}`,
+  }
+}
+
+async function recalcShopifyRevenue(errorDetails: Array<{ message: string }>) {
+  const PAGE = 1000
+  const shopifyByCustomer = new Map<string, number>()
+  let from = 0
+  for (;;) {
+    const { data, error } = await supabaseAdmin
+      .from('crm_revenue_transactions')
+      .select('crm_customer_id, amount, transaction_type')
+      .eq('provider', 'shopify')
+      .in('status', ['succeeded', 'adjusted'])
+      .not('crm_customer_id', 'is', null)
+      .range(from, from + PAGE - 1)
+    if (error) {
+      errorDetails.push({ message: `Revenue load: ${error.message}` })
+      break
+    }
+    for (const t of data ?? []) {
+      if (!t.crm_customer_id) continue
+      const delta =
+        t.transaction_type === 'app_sale_adjustment' || t.transaction_type === 'app_sale_credit'
+          ? -Math.abs(t.amount)
+          : t.amount
+      shopifyByCustomer.set(t.crm_customer_id, (shopifyByCustomer.get(t.crm_customer_id) ?? 0) + delta)
+    }
+    if (!data || data.length < PAGE) break
+    from += PAGE
+  }
+
+  const ids = [...shopifyByCustomer.keys()]
+  for (let i = 0; i < ids.length; i += 50) {
+    const batch = ids.slice(i, i + 50)
+    const { data: stripeTxns } = await supabaseAdmin
+      .from('crm_revenue_transactions')
+      .select('crm_customer_id, amount')
+      .eq('provider', 'stripe')
+      .eq('status', 'succeeded')
+      .in('crm_customer_id', batch)
+
+    const stripeByCustomer = new Map<string, number>()
+    for (const t of stripeTxns ?? []) {
+      if (!t.crm_customer_id) continue
+      stripeByCustomer.set(t.crm_customer_id, (stripeByCustomer.get(t.crm_customer_id) ?? 0) + t.amount)
+    }
+
+    await Promise.all(
+      batch.map((id) =>
+        supabaseAdmin
+          .from('crm_customers')
+          .update({
+            calculated_total_revenue:
+              (shopifyByCustomer.get(id) ?? 0) + (stripeByCustomer.get(id) ?? 0),
+          })
+          .eq('id', id)
+      )
+    )
   }
 }

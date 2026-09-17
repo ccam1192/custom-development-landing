@@ -58,6 +58,10 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+export function partnerRateLimitPause() {
+  return sleep(PAGE_DELAY_MS)
+}
+
 function isRateLimit(status: number, errors?: Array<{ message?: string; extensions?: { code?: string } }>): boolean {
   if (status === 429) return true
   return (errors ?? []).some(

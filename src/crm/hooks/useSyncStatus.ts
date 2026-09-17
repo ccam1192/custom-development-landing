@@ -42,28 +42,35 @@ export function useSyncStatus(onSyncComplete?: () => void) {
         const endpoint = provider === 'all' ? '/api/crm/sync/all' : `/api/crm/sync/${provider}`
         const { data: { session } } = await supabase.auth.getSession()
 
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${session?.access_token ?? ''}`,
-          },
-        })
+        const headers = {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token ?? ''}`,
+        }
 
-        const contentType = res.headers.get('content-type') ?? ''
-        if (!res.ok) {
-          if (contentType.includes('application/json')) {
-            const body = await res.json().catch(() => ({ error: 'Sync failed' }))
-            setError(`${provider} sync: ${body.error ?? `HTTP ${res.status}`}`)
-          } else {
-            const text = await res.text().catch(() => '')
-            setError(`${provider} sync: HTTP ${res.status}${text ? ` — ${text.substring(0, 200)}` : ''}`)
+        let keepGoing = true
+        let rounds = 0
+        while (keepGoing) {
+          rounds++
+          const res = await fetch(endpoint, { method: 'POST', headers })
+          const contentType = res.headers.get('content-type') ?? ''
+
+          if (!res.ok) {
+            if (contentType.includes('application/json')) {
+              const body = await res.json().catch(() => ({ error: 'Sync failed' }))
+              setError(`${provider} sync: ${body.error ?? `HTTP ${res.status}`}`)
+            } else {
+              const text = await res.text().catch(() => '')
+              setError(`${provider} sync: HTTP ${res.status}${text ? ` — ${text.substring(0, 200)}` : ''}`)
+            }
+            break
           }
-        } else {
+
           const body = await res.json().catch(() => null)
           if (body) {
-            console.log(`[CRM] ${provider} sync result:`, body)
+            console.log(`[CRM] ${provider} sync result (round ${rounds}):`, body)
           }
+
+          keepGoing = provider === 'shopify' && body?.continue === true && rounds < 80
         }
 
         await fetchStates()
