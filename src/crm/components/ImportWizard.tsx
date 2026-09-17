@@ -170,65 +170,55 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
     setStep('importing')
     const result = { imported: 0, matched: 0, created: 0, skipped: 0, errors: [] as string[] }
 
-    for (let i = 0; i < rows.length; i++) {
-      setImportProgress(Math.round(((i + 1) / rows.length) * 100))
-      const row = rows[i]
+    const str = (v: unknown): string => (v == null ? '' : String(v).trim())
 
+    // Phase 1: Pre-fetch ALL existing customers for fast matching
+    setImportProgress(1)
+    const { data: existingCustomers } = await supabase
+      .from('crm_customers')
+      .select('id, email, boardroom_user_id, stripe_customer_id, shopify_shop_id')
+
+    const byEmail = new Map<string, string>()
+    const byBoardroom = new Map<string, string>()
+    const byStripe = new Map<string, string>()
+    const byShopify = new Map<string, string>()
+
+    for (const c of existingCustomers ?? []) {
+      if (c.email) byEmail.set(c.email.toLowerCase(), c.id)
+      if (c.boardroom_user_id) byBoardroom.set(c.boardroom_user_id, c.id)
+      if (c.stripe_customer_id) byStripe.set(c.stripe_customer_id, c.id)
+      if (c.shopify_shop_id) byShopify.set(c.shopify_shop_id, c.id)
+    }
+
+    setImportProgress(5)
+
+    // Phase 2: Build all records, separate into creates vs updates
+    const toCreate: Array<Record<string, unknown>> = []
+    const toUpdate: Array<{ id: string; fields: Record<string, unknown> }> = []
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]
       try {
-        const email = mapping.email ? row[mapping.email]?.trim() : ''
-        const name = mapping.name ? row[mapping.name]?.trim() : ''
-        const boardroomId = mapping.boardroom_user_id ? row[mapping.boardroom_user_id]?.trim() : ''
-        const stripeId = mapping.stripe_customer_id ? row[mapping.stripe_customer_id]?.trim() : ''
-        const shopifyId = mapping.shopify_shop_id ? row[mapping.shopify_shop_id]?.trim() : ''
+        const email = mapping.email ? str(row[mapping.email]) : ''
+        const name = mapping.name ? str(row[mapping.name]) : ''
+        const boardroomId = mapping.boardroom_user_id ? str(row[mapping.boardroom_user_id]) : ''
+        const stripeId = mapping.stripe_customer_id ? str(row[mapping.stripe_customer_id]) : ''
+        const shopifyId = mapping.shopify_shop_id ? str(row[mapping.shopify_shop_id]) : ''
 
         if (!email && !name && !boardroomId) {
           result.skipped++
           continue
         }
 
-        // Try to find existing customer
-        let existingId: string | null = null
+        // Fast in-memory lookup
+        const existingId =
+          (boardroomId && byBoardroom.get(boardroomId)) ||
+          (stripeId && byStripe.get(stripeId)) ||
+          (shopifyId && byShopify.get(shopifyId)) ||
+          (email && byEmail.get(email.toLowerCase())) ||
+          null
 
-        if (boardroomId) {
-          const { data } = await supabase
-            .from('crm_customers')
-            .select('id')
-            .eq('boardroom_user_id', boardroomId)
-            .limit(1)
-          if (data?.[0]) existingId = data[0].id
-        }
-
-        if (!existingId && stripeId) {
-          const { data } = await supabase
-            .from('crm_customers')
-            .select('id')
-            .eq('stripe_customer_id', stripeId)
-            .limit(1)
-          if (data?.[0]) existingId = data[0].id
-        }
-
-        if (!existingId && shopifyId) {
-          const { data } = await supabase
-            .from('crm_customers')
-            .select('id')
-            .eq('shopify_shop_id', shopifyId)
-            .limit(1)
-          if (data?.[0]) existingId = data[0].id
-        }
-
-        if (!existingId && email) {
-          const { data } = await supabase
-            .from('crm_customers')
-            .select('id')
-            .eq('email', email)
-            .limit(1)
-          if (data?.[0]) existingId = data[0].id
-        }
-
-        // Build record — only set fields that aren't authoritative API fields
         const record: Record<string, unknown> = {}
-
-        const str = (v: unknown): string => (v == null ? '' : String(v).trim())
 
         if (name) record.name = name
         if (email) record.email = email
@@ -247,7 +237,6 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
         if (mapping.source && row[mapping.source]) record.source = parseSource(str(row[mapping.source]))
         if (mapping.notes && row[mapping.notes]) record.notes = str(row[mapping.notes])
 
-        // MRR and Revenue from spreadsheet go to override ONLY if no existing calculated value
         if (mapping.mrr && row[mapping.mrr] != null && row[mapping.mrr] !== '') {
           const raw = row[mapping.mrr]
           const val = typeof raw === 'number' ? raw : parseFloat(String(raw).replace(/[$,]/g, ''))
@@ -264,8 +253,6 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
         if (shopifyId) record.shopify_shop_id = shopifyId
 
         if (existingId) {
-          // Update existing — merge, don't overwrite API fields
-          // For existing records, only set notes and CRM-specific fields
           const mergeFields: Record<string, unknown> = {}
           if (record.notes) mergeFields.notes = record.notes
           if (record.client_status) mergeFields.client_status = record.client_status
@@ -273,28 +260,46 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
           if (record.source) mergeFields.source = record.source
           if (record.mrr_override) mergeFields.mrr_override = record.mrr_override
           if (record.total_revenue_override) mergeFields.total_revenue_override = record.total_revenue_override
-          if (!record.store_url) delete mergeFields.store_url
           mergeFields.updated_by = 'spreadsheet_import'
-
-          if (Object.keys(mergeFields).length > 1) {
-            await supabase.from('crm_customers').update(mergeFields).eq('id', existingId)
-          }
+          toUpdate.push({ id: existingId, fields: mergeFields })
           result.matched++
         } else {
-          // Create new
           record.updated_by = 'spreadsheet_import'
-          const { error } = await supabase.from('crm_customers').insert(record)
-          if (error) {
-            result.errors.push(`Row ${i + 1}: ${error.message}`)
-          } else {
-            result.created++
-          }
+          toCreate.push(record)
         }
-
         result.imported++
       } catch (e) {
         result.errors.push(`Row ${i + 1}: ${e instanceof Error ? e.message : 'Unknown error'}`)
       }
+    }
+
+    setImportProgress(20)
+
+    // Phase 3: Batch insert new records (chunks of 200)
+    for (let i = 0; i < toCreate.length; i += 200) {
+      const batch = toCreate.slice(i, i + 200)
+      const { error } = await supabase.from('crm_customers').insert(batch)
+      if (error) {
+        result.errors.push(`Insert batch ${Math.floor(i / 200) + 1}: ${error.message}`)
+      } else {
+        result.created += batch.length
+      }
+      setImportProgress(20 + Math.round(((i + batch.length) / (toCreate.length + toUpdate.length)) * 70))
+    }
+
+    // Phase 4: Batch update existing records (individual updates needed for different IDs)
+    // Process in parallel batches of 20
+    for (let i = 0; i < toUpdate.length; i += 20) {
+      const batch = toUpdate.slice(i, i + 20)
+      await Promise.all(
+        batch.map(({ id, fields }) =>
+          supabase.from('crm_customers').update(fields).eq('id', id)
+            .then(({ error }) => {
+              if (error) result.errors.push(`Update ${id}: ${error.message}`)
+            })
+        )
+      )
+      setImportProgress(20 + Math.round(((toCreate.length + i + batch.length) / (toCreate.length + toUpdate.length)) * 70))
     }
 
     // Log the import

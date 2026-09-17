@@ -18,7 +18,7 @@ function getStripe(): Stripe {
   if (!STRIPE_SECRET_KEY) {
     throw new Error('STRIPE_SECRET_KEY not configured')
   }
-  return new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2025-05-28.basil' as Stripe.LatestApiVersion })
+  return new Stripe(STRIPE_SECRET_KEY)
 }
 
 export function isStripeConfigured(): boolean {

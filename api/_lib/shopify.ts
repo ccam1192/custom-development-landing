@@ -82,13 +82,13 @@ export async function getAppTransactions(
   createdAtMin?: string
 ): Promise<TransactionsPage> {
   const query = `
-    query AppTransactions($appId: ID!, $after: String, $types: [AppTransactionType!]) {
+    query AppTransactions($appId: ID!, $after: String, $types: [AppTransactionType!]${createdAtMin ? ', $createdAtMin: DateTime' : ''}) {
       app(id: $appId) {
         transactions(
           first: 100
           after: $after
           types: $types
-          ${createdAtMin ? `createdAtMin: "${createdAtMin}"` : ''}
+          ${createdAtMin ? 'createdAtMin: $createdAtMin' : ''}
         ) {
           edges {
             node {
@@ -138,6 +138,7 @@ export async function getAppTransactions(
     appId: `gid://partners/App/${APP_ID}`,
     after: after || null,
     types: ['APP_USAGE_SALE', 'APP_SALE_ADJUSTMENT', 'APP_SALE_CREDIT'],
+    ...(createdAtMin ? { createdAtMin } : {}),
   })
 
   const txns = data.app.transactions
