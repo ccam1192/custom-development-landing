@@ -3,7 +3,7 @@ import { requireAuth } from '../../_lib/auth.js'
 import { supabaseAdmin } from '../../_lib/supabase-admin.js'
 import { isShopifyConfigured, getAllAppTransactions } from '../../_lib/shopify.js'
 
-export const config = { maxDuration: 120 }
+export const config = { maxDuration: 300 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })

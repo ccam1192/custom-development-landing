@@ -145,9 +145,9 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target!.result as ArrayBuffer)
-        const workbook = XLSX.read(data, { type: 'array' })
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true })
         const sheet = workbook.Sheets[workbook.SheetNames[0]]
-        const json = XLSX.utils.sheet_to_json<ParsedRow>(sheet, { defval: '' })
+        const json = XLSX.utils.sheet_to_json<ParsedRow>(sheet, { defval: '', raw: false })
         if (json.length === 0) return
 
         const hdrs = Object.keys(json[0])
@@ -193,6 +193,40 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
 
     const str = (v: unknown): string => (v == null ? '' : String(v).trim())
 
+    /**
+     * Parse a date from a spreadsheet cell.
+     * Handles: Date objects, ISO strings, US date strings, Excel serial numbers.
+     */
+    function parseDate(val: unknown): string | null {
+      if (val == null || val === '') return null
+
+      // Already a Date object (cellDates: true)
+      if (val instanceof Date) {
+        return isNaN(val.getTime()) ? null : val.toISOString()
+      }
+
+      const s = String(val).trim()
+      if (!s) return null
+
+      // Try parsing as a normal date string
+      const parsed = new Date(s)
+      if (!isNaN(parsed.getTime())) {
+        // Guard against epoch-ish dates (Dec 31 1969 / Jan 1 1970)
+        if (parsed.getFullYear() > 1980) return parsed.toISOString()
+      }
+
+      // Try as Excel serial number (number of days since 1900-01-01)
+      const num = Number(s)
+      if (!isNaN(num) && num > 1 && num < 200000) {
+        const excelEpoch = new Date(Date.UTC(1899, 11, 30))
+        const ms = excelEpoch.getTime() + num * 86400000
+        const d = new Date(ms)
+        if (!isNaN(d.getTime()) && d.getFullYear() > 1980) return d.toISOString()
+      }
+
+      return null
+    }
+
     // Phase 1: Pre-fetch ALL existing customers for fast matching
     setImportProgress(1)
     const { data: existingCustomers } = await supabase
@@ -213,6 +247,7 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
 
     // Track emails seen in THIS import to prevent intra-spreadsheet duplicates
     const seenEmails = new Set<string>()
+    let duplicatesInSheet = 0
 
     setImportProgress(5)
 
@@ -230,13 +265,15 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
         const stripeId = mapping.stripe_customer_id ? str(row[mapping.stripe_customer_id]) : ''
         const shopifyId = mapping.shopify_shop_id ? str(row[mapping.shopify_shop_id]) : ''
 
-        if (!email && !name && !boardroomId) {
+        // Skip only if truly empty — no identifiable info at all
+        if (!email && !name && !boardroomId && !stripeId && !shopifyId) {
           result.skipped++
           continue
         }
 
-        // Check for duplicate within this same spreadsheet
+        // Check for duplicate within this same spreadsheet (by email)
         if (emailLower && seenEmails.has(emailLower)) {
+          duplicatesInSheet++
           result.skipped++
           continue
         }
@@ -255,18 +292,33 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
         if (name) record.name = name
         if (email) record.email = email
         if (mapping.store_url && row[mapping.store_url]) record.store_url = str(row[mapping.store_url])
+
+        // Date parsing with Excel serial support
         if (mapping.signup_date && row[mapping.signup_date]) {
-          const parsed = new Date(row[mapping.signup_date])
-          if (!isNaN(parsed.getTime())) record.signup_date = parsed.toISOString()
+          const d = parseDate(row[mapping.signup_date])
+          if (d) record.signup_date = d
         }
-        if (mapping.user_type && row[mapping.user_type]) record.user_type = parseUserType(str(row[mapping.user_type]))
-        if (mapping.billing_channel && row[mapping.billing_channel]) record.billing_channel = parseBillingChannel(str(row[mapping.billing_channel]))
-        if (mapping.client_status && row[mapping.client_status]) record.client_status = parseStatus(str(row[mapping.client_status]))
+
+        // Only set user_type if a mapping column was chosen AND has a value
+        if (mapping.user_type && row[mapping.user_type] && str(row[mapping.user_type])) {
+          record.user_type = parseUserType(str(row[mapping.user_type]))
+        }
+        if (mapping.billing_channel && row[mapping.billing_channel] && str(row[mapping.billing_channel])) {
+          record.billing_channel = parseBillingChannel(str(row[mapping.billing_channel]))
+        }
+        if (mapping.client_status && row[mapping.client_status] && str(row[mapping.client_status])) {
+          record.client_status = parseStatus(str(row[mapping.client_status]))
+        }
+
+        // Cancellation date with Excel serial support
         if (mapping.cancellation_date && row[mapping.cancellation_date]) {
-          const parsed = new Date(row[mapping.cancellation_date])
-          if (!isNaN(parsed.getTime())) record.cancellation_date = parsed.toISOString()
+          const d = parseDate(row[mapping.cancellation_date])
+          if (d) record.cancellation_date = d
         }
-        if (mapping.source && row[mapping.source]) record.source = parseSource(str(row[mapping.source]))
+
+        if (mapping.source && row[mapping.source] && str(row[mapping.source])) {
+          record.source = parseSource(str(row[mapping.source]))
+        }
         if (mapping.notes && row[mapping.notes]) record.notes = str(row[mapping.notes])
 
         if (mapping.mrr && row[mapping.mrr] != null && row[mapping.mrr] !== '') {
@@ -308,6 +360,10 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
       } catch (e) {
         result.errors.push(`Row ${i + 1}: ${e instanceof Error ? e.message : 'Unknown error'}`)
       }
+    }
+
+    if (duplicatesInSheet > 0) {
+      result.errors.push(`${duplicatesInSheet} duplicate email(s) within the spreadsheet were skipped`)
     }
 
     setImportProgress(20)
