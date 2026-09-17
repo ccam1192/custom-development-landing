@@ -153,3 +153,23 @@ body {
   font-size: 0.75rem;
   font-weight: 400;
 }
+
+/* ─── CRM-specific utilities ─── */
+
+.crm-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.crm-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.crm-scrollbar::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+}
+
+.crm-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
