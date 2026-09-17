@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { requireAuth } from '../../_lib/auth.js'
-import { supabaseAdmin } from '../../_lib/supabase-admin.js'
+import { supabaseAdmin, fetchAllRows } from '../../_lib/supabase-admin.js'
 import { determineClientStatus, calculateMrr } from '../../_lib/status-engine.js'
 import {
   isStripeConfigured,
@@ -51,17 +51,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `[Stripe Sync] Fetched ${customers.length} customers, ${subscriptions.length} subs, ${invoices.length} invoices in ${Date.now() - t0}ms`
     )
 
-    // ── Phase 2: Pre-fetch ALL existing CRM customers (ONE query) ──
-    const { data: existingCrm } = await supabaseAdmin
-      .from('crm_customers')
-      .select('id, email, stripe_customer_id')
+    // ── Phase 2: Pre-fetch ALL existing CRM customers (paginated — PostgREST caps at 1000) ──
+    const existingCrm = await fetchAllRows<{
+      id: string
+      email: string | null
+      stripe_customer_id: string | null
+      client_status: string | null
+      name: string | null
+    }>('crm_customers', 'id, email, stripe_customer_id, client_status, name')
 
     const crmByStripeId = new Map<string, string>()
     const crmByEmail = new Map<string, string>()
-    for (const c of existingCrm ?? []) {
+    const crmStatusById = new Map<string, string>()
+    for (const c of existingCrm) {
       if (c.stripe_customer_id) crmByStripeId.set(c.stripe_customer_id, c.id)
-      if (c.email) crmByEmail.set(c.email.toLowerCase(), c.id)
+      if (c.email) crmByEmail.set(c.email.toLowerCase().trim(), c.id)
+      crmStatusById.set(c.id, c.client_status ?? 'prospect')
     }
+    console.log(`[Stripe Sync] Loaded ${existingCrm.length} existing CRM customers for matching`)
 
     // ── Phase 3: Build in-memory maps ──
 
@@ -238,11 +245,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           stripe_plan_amount: planAmount,
           stripe_cancel_at: sub?.cancel_at ? new Date(sub.cancel_at * 1000).toISOString() : null,
           stripe_canceled_at: sub?.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
-          client_status: clientStatus,
           calculated_mrr: calculatedMrr,
           calculated_total_revenue: merged.totalRevenue,
-          cancellation_date: sub?.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
           last_synced_at: new Date().toISOString(),
+          billing_channel: 'stripe',
+        }
+
+        if (sub?.canceled_at) {
+          record.cancellation_date = new Date(sub.canceled_at * 1000).toISOString()
         }
 
         // Find existing CRM customer (in-memory lookup, zero DB queries)
@@ -252,24 +262,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (existingId) break
         }
         if (!existingId && merged.email) {
-          existingId = crmByEmail.get(merged.email.toLowerCase()) ?? null
+          existingId = crmByEmail.get(merged.email.toLowerCase().trim()) ?? null
+        }
+        if (existingId === 'pending') existingId = null
+
+        // Skip empty Stripe shell customers (no email, no payment, no live sub)
+        const hasLiveSub = !!sub && ACTIVE_STATUSES.has(sub.status)
+        if (!existingId && !merged.email && !merged.hasPayment && !hasLiveSub) {
+          continue
         }
 
-        // Always set billing_channel when customer is in Stripe
-        record.billing_channel = 'stripe'
-
         if (existingId) {
+          const existingStatus = crmStatusById.get(existingId)
+          // Don't demote a real spreadsheet/CRM status to Prospect just because
+          // Stripe has a shell customer with no subscription.
+          if (
+            clientStatus === 'prospect' &&
+            existingStatus &&
+            existingStatus !== 'prospect'
+          ) {
+            record.client_status = existingStatus
+          } else {
+            record.client_status = clientStatus
+          }
           toUpdate.push({ id: existingId, record })
           updated++
         } else {
+          record.client_status = clientStatus
           record.name = merged.name
           record.email = merged.email
           record.source = 'stripe'
           toCreate.push(record)
           created++
 
-          // Track email so subsequent no-email Stripe customers don't dupe
-          if (merged.email) crmByEmail.set(merged.email.toLowerCase(), 'pending')
+          if (merged.email) crmByEmail.set(merged.email.toLowerCase().trim(), 'pending')
         }
       } catch (e) {
         errors++

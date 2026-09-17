@@ -229,16 +229,33 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
 
     // Phase 1: Pre-fetch ALL existing customers for fast matching
     setImportProgress(1)
-    const { data: existingCustomers } = await supabase
-      .from('crm_customers')
-      .select('id, email, boardroom_user_id, stripe_customer_id, shopify_shop_id')
+    const existingCustomers: Array<{
+      id: string
+      email: string | null
+      boardroom_user_id: string | null
+      stripe_customer_id: string | null
+      shopify_shop_id: string | null
+    }> = []
+    {
+      let from = 0
+      const PAGE = 1000
+      for (;;) {
+        const { data } = await supabase
+          .from('crm_customers')
+          .select('id, email, boardroom_user_id, stripe_customer_id, shopify_shop_id')
+          .range(from, from + PAGE - 1)
+        existingCustomers.push(...(data ?? []))
+        if (!data || data.length < PAGE) break
+        from += PAGE
+      }
+    }
 
     const byEmail = new Map<string, string>()
     const byBoardroom = new Map<string, string>()
     const byStripe = new Map<string, string>()
     const byShopify = new Map<string, string>()
 
-    for (const c of existingCustomers ?? []) {
+    for (const c of existingCustomers) {
       if (c.email) byEmail.set(c.email.toLowerCase(), c.id)
       if (c.boardroom_user_id) byBoardroom.set(c.boardroom_user_id, c.id)
       if (c.stripe_customer_id) byStripe.set(c.stripe_customer_id, c.id)

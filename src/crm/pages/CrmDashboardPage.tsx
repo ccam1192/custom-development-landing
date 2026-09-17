@@ -28,6 +28,7 @@ export default function CrmDashboardPage() {
     sortField,
     sortDirection,
     selectedIds,
+    filteredTotals,
     setFilters,
     setSort,
     setPage,
@@ -143,6 +144,7 @@ export default function CrmDashboardPage() {
             sortDirection={sortDirection}
             pagination={pagination}
             selectedIds={selectedIds}
+            filteredTotals={filteredTotals}
             onSort={setSort}
             onToggleSelect={toggleSelect}
             onToggleSelectAll={toggleSelectAll}

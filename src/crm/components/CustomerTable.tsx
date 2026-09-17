@@ -8,6 +8,7 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import type { CrmCustomer, SortField, SortDirection, PaginationState } from '../types'
+import type { FilteredTotals } from '../hooks/useCustomers'
 import {
   CLIENT_STATUS_LABELS,
   CLIENT_STATUS_COLORS,
@@ -27,6 +28,7 @@ interface CustomerTableProps {
   sortDirection: SortDirection
   pagination: PaginationState
   selectedIds: Set<string>
+  filteredTotals: FilteredTotals
   onSort: (field: SortField, dir?: SortDirection) => void
   onToggleSelect: (id: string) => void
   onToggleSelectAll: () => void
@@ -111,6 +113,7 @@ export default function CustomerTable({
   sortDirection,
   pagination,
   selectedIds,
+  filteredTotals,
   onSort,
   onToggleSelect,
   onToggleSelectAll,
@@ -286,9 +289,13 @@ export default function CustomerTable({
 
       {/* Pagination */}
       <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200 bg-gray-50/50">
-        <div className="flex items-center gap-4 text-sm text-gray-500">
+        <div className="flex items-center gap-4 text-sm text-gray-500 flex-wrap">
           <span>
-            {from}–{to} of {pagination.total}
+            {from}–{to} of {pagination.total.toLocaleString()}
+          </span>
+          <span className={filteredTotals.filtered ? 'text-primary font-medium' : 'text-gray-600'}>
+            {filteredTotals.filtered ? 'Filtered totals' : 'Totals'}:{' '}
+            MRR {formatCurrency(filteredTotals.mrr)} · Revenue {formatCurrency(filteredTotals.revenue)}
           </span>
           <select
             value={pagination.pageSize}

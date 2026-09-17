@@ -220,6 +220,24 @@ export const DEFAULT_FILTERS: CustomerFilters = {
   revenue_max: null,
 }
 
+export function hasActiveFilters(f: CustomerFilters): boolean {
+  return (
+    !!f.search ||
+    f.client_status.length > 0 ||
+    f.billing_channel.length > 0 ||
+    f.user_type.length > 0 ||
+    f.source.length > 0 ||
+    f.signup_date_from != null ||
+    f.signup_date_to != null ||
+    f.cancellation_date_from != null ||
+    f.cancellation_date_to != null ||
+    f.mrr_min != null ||
+    f.mrr_max != null ||
+    f.revenue_min != null ||
+    f.revenue_max != null
+  )
+}
+
 /* ─── Helper to get displayed MRR / Revenue ────────────────────────────────── */
 
 export function getDisplayMrr(c: CrmCustomer): number {

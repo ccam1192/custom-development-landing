@@ -7,7 +7,13 @@ import type {
   SortDirection,
   PaginationState,
 } from '../types'
-import { DEFAULT_FILTERS } from '../types'
+import { DEFAULT_FILTERS, hasActiveFilters } from '../types'
+
+export interface FilteredTotals {
+  mrr: number
+  revenue: number
+  filtered: boolean
+}
 
 interface UseCustomersReturn {
   customers: CrmCustomer[]
@@ -18,6 +24,7 @@ interface UseCustomersReturn {
   sortField: SortField
   sortDirection: SortDirection
   selectedIds: Set<string>
+  filteredTotals: FilteredTotals
   setFilters: (f: CustomerFilters) => void
   setSort: (field: SortField, dir?: SortDirection) => void
   setPage: (page: number) => void
@@ -42,7 +49,28 @@ export function useCustomers(): UseCustomersReturn {
     total: 0,
   })
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [filteredTotals, setFilteredTotals] = useState<FilteredTotals>({ mrr: 0, revenue: 0, filtered: false })
   const fetchIdRef = useRef(0)
+
+  function applyCustomerFilters(query: any, f: CustomerFilters) {
+    if (f.search) {
+      const term = `%${f.search}%`
+      query = query.or(`name.ilike.${term},email.ilike.${term},store_url.ilike.${term},notes.ilike.${term}`)
+    }
+    if (f.client_status.length > 0) query = query.in('client_status', f.client_status)
+    if (f.billing_channel.length > 0) query = query.in('billing_channel', f.billing_channel)
+    if (f.user_type.length > 0) query = query.in('user_type', f.user_type)
+    if (f.source.length > 0) query = query.in('source', f.source)
+    if (f.signup_date_from) query = query.gte('signup_date', f.signup_date_from)
+    if (f.signup_date_to) query = query.lte('signup_date', f.signup_date_to)
+    if (f.cancellation_date_from) query = query.gte('cancellation_date', f.cancellation_date_from)
+    if (f.cancellation_date_to) query = query.lte('cancellation_date', f.cancellation_date_to)
+    if (f.mrr_min != null) query = query.gte('effective_mrr', f.mrr_min)
+    if (f.mrr_max != null) query = query.lte('effective_mrr', f.mrr_max)
+    if (f.revenue_min != null) query = query.gte('effective_total_revenue', f.revenue_min)
+    if (f.revenue_max != null) query = query.lte('effective_total_revenue', f.revenue_max)
+    return query
+  }
 
   const fetchCustomers = useCallback(async () => {
     const fetchId = ++fetchIdRef.current
@@ -54,53 +82,7 @@ export function useCustomers(): UseCustomersReturn {
         .from('crm_customers')
         .select('*', { count: 'exact' })
 
-      // Text search
-      if (filters.search) {
-        const term = `%${filters.search}%`
-        query = query.or(`name.ilike.${term},email.ilike.${term},store_url.ilike.${term},notes.ilike.${term}`)
-      }
-
-      // Enum filters
-      if (filters.client_status.length > 0) {
-        query = query.in('client_status', filters.client_status)
-      }
-      if (filters.billing_channel.length > 0) {
-        query = query.in('billing_channel', filters.billing_channel)
-      }
-      if (filters.user_type.length > 0) {
-        query = query.in('user_type', filters.user_type)
-      }
-      if (filters.source.length > 0) {
-        query = query.in('source', filters.source)
-      }
-
-      // Date range filters
-      if (filters.signup_date_from) {
-        query = query.gte('signup_date', filters.signup_date_from)
-      }
-      if (filters.signup_date_to) {
-        query = query.lte('signup_date', filters.signup_date_to)
-      }
-      if (filters.cancellation_date_from) {
-        query = query.gte('cancellation_date', filters.cancellation_date_from)
-      }
-      if (filters.cancellation_date_to) {
-        query = query.lte('cancellation_date', filters.cancellation_date_to)
-      }
-
-      // Numeric range filters (using generated columns that COALESCE override + calculated)
-      if (filters.mrr_min != null) {
-        query = query.gte('effective_mrr', filters.mrr_min)
-      }
-      if (filters.mrr_max != null) {
-        query = query.lte('effective_mrr', filters.mrr_max)
-      }
-      if (filters.revenue_min != null) {
-        query = query.gte('effective_total_revenue', filters.revenue_min)
-      }
-      if (filters.revenue_max != null) {
-        query = query.lte('effective_total_revenue', filters.revenue_max)
-      }
+      query = applyCustomerFilters(query, filters)
 
       // Sorting
       query = query.order(sortField, { ascending: sortDirection === 'asc' })
@@ -121,6 +103,22 @@ export function useCustomers(): UseCustomersReturn {
 
       setCustomers((data ?? []) as CrmCustomer[])
       setPagination((prev) => ({ ...prev, total: count ?? 0 }))
+
+      // Totals for the full filtered set (not just the current page)
+      let sumQuery = supabase
+        .from('crm_customers')
+        .select('mrr:effective_mrr.sum(), revenue:effective_total_revenue.sum()')
+      sumQuery = applyCustomerFilters(sumQuery, filters)
+      const { data: sumData, error: sumErr } = await sumQuery
+      if (fetchId !== fetchIdRef.current) return
+      if (!sumErr) {
+        const row = (sumData?.[0] ?? {}) as { mrr?: number | null; revenue?: number | null }
+        setFilteredTotals({
+          mrr: Number(row.mrr ?? 0),
+          revenue: Number(row.revenue ?? 0),
+          filtered: hasActiveFilters(filters),
+        })
+      }
     } catch (e) {
       if (fetchId === fetchIdRef.current) {
         setError(e instanceof Error ? e.message : 'Failed to fetch customers')
@@ -151,6 +149,12 @@ export function useCustomers(): UseCustomersReturn {
       })
     }
     setPagination((prev) => ({ ...prev, page: 1 }))
+  }, [])
+
+  const applyFilters = useCallback((f: CustomerFilters) => {
+    setFilters(f)
+    setPagination((prev) => ({ ...prev, page: 1 }))
+    setSelectedIds(new Set())
   }, [])
 
   const setPage = useCallback((page: number) => {
@@ -193,7 +197,8 @@ export function useCustomers(): UseCustomersReturn {
     sortField,
     sortDirection,
     selectedIds,
-    setFilters,
+    filteredTotals,
+    setFilters: applyFilters,
     setSort,
     setPage,
     setPageSize,

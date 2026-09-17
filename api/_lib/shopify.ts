@@ -1,8 +1,9 @@
 /**
  * Shopify Partner API Integration
  *
- * Uses the GraphQL Partner API to fetch actual collected revenue
- * from APP_USAGE_SALE transactions (not merely usage charges).
+ * Uses the root `transactions` query (App.transactions was removed)
+ * to fetch actual collected revenue: usage sales, subscription sales,
+ * adjustments, and credits.
  *
  * Required env:
  *   SHOPIFY_PARTNER_ORG_ID
@@ -20,21 +21,24 @@ export function isShopifyConfigured(): boolean {
   return !!ORG_ID && !!ACCESS_TOKEN && !!APP_ID
 }
 
+interface Money {
+  amount: string
+  currencyCode: string
+}
+
 interface ShopifyTransaction {
   id: string
-  type: string
   createdAt: string
-  chargeId: string | null
-  grossAmount: { amount: string; currencyCode: string }
-  netAmount: { amount: string; currencyCode: string }
-  shopifyFee: { amount: string; currencyCode: string }
-  processingFee?: { amount: string; currencyCode: string }
-  regulatoryOperatingFee?: { amount: string; currencyCode: string }
-  shop: {
+  __typename: string
+  chargeId?: string | null
+  grossAmount?: Money | null
+  netAmount?: Money | null
+  shopifyFee?: Money | null
+  shop?: {
     id: string
     myshopifyDomain: string
     name: string
-  }
+  } | null
 }
 
 interface TransactionsPage {
@@ -72,76 +76,98 @@ async function partnerQuery<T>(query: string, variables?: Record<string, unknown
   return json.data
 }
 
+const TRANSACTION_FIELDS = `
+  id
+  createdAt
+  __typename
+  ... on AppUsageSale {
+    chargeId
+    grossAmount { amount currencyCode }
+    netAmount { amount currencyCode }
+    shopifyFee { amount currencyCode }
+    shop { id myshopifyDomain name }
+  }
+  ... on AppSubscriptionSale {
+    chargeId
+    grossAmount { amount currencyCode }
+    netAmount { amount currencyCode }
+    shopifyFee { amount currencyCode }
+    shop { id myshopifyDomain name }
+  }
+  ... on AppOneTimeSale {
+    chargeId
+    grossAmount { amount currencyCode }
+    netAmount { amount currencyCode }
+    shopifyFee { amount currencyCode }
+    shop { id myshopifyDomain name }
+  }
+  ... on AppSaleAdjustment {
+    grossAmount { amount currencyCode }
+    netAmount { amount currencyCode }
+    shopifyFee { amount currencyCode }
+    shop { id myshopifyDomain name }
+  }
+  ... on AppSaleCredit {
+    grossAmount { amount currencyCode }
+    netAmount { amount currencyCode }
+    shopifyFee { amount currencyCode }
+    shop { id myshopifyDomain name }
+  }
+`
+
 /**
- * Fetch APP_USAGE_SALE, APP_SALE_ADJUSTMENT, and APP_SALE_CREDIT transactions.
+ * Fetch collected-revenue transactions for the app.
  *
- * These represent actual collected revenue, not merely created usage charges.
+ * Partner API 2025+: `transactions` lives on QueryRoot, not App.
  */
 export async function getAppTransactions(
   after?: string | null,
   createdAtMin?: string
 ): Promise<TransactionsPage> {
   const query = `
-    query AppTransactions($appId: ID!, $after: String, $types: [TransactionType!]${createdAtMin ? ', $createdAtMin: DateTime' : ''}) {
-      app(id: $appId) {
-        transactions(
-          first: 100
-          after: $after
-          types: $types
-          ${createdAtMin ? 'createdAtMin: $createdAtMin' : ''}
-        ) {
-          edges {
-            node {
-              id
-              type
-              createdAt
-              ... on AppUsageSale {
-                chargeId
-                grossAmount { amount currencyCode }
-                netAmount { amount currencyCode }
-                shopifyFee { amount currencyCode }
-                processingFee { amount currencyCode }
-                regulatoryOperatingFee { amount currencyCode }
-                shop { id myshopifyDomain name }
-              }
-              ... on AppSaleAdjustment {
-                grossAmount { amount currencyCode }
-                netAmount { amount currencyCode }
-                shopifyFee { amount currencyCode }
-                shop { id myshopifyDomain name }
-              }
-              ... on AppSaleCredit {
-                grossAmount { amount currencyCode }
-                netAmount { amount currencyCode }
-                shopifyFee { amount currencyCode }
-                shop { id myshopifyDomain name }
-              }
-            }
+    query AppTransactions($appId: ID!, $after: String, $types: [TransactionType!], $createdAtMin: DateTime) {
+      transactions(
+        first: 100
+        after: $after
+        appId: $appId
+        types: $types
+        createdAtMin: $createdAtMin
+      ) {
+        edges {
+          node {
+            ${TRANSACTION_FIELDS}
           }
-          pageInfo {
-            hasNextPage
-            endCursor
-          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
         }
       }
     }
   `
 
   const data = await partnerQuery<{
-    app: {
-      transactions: {
-        edges: Array<{ node: ShopifyTransaction }>
-        pageInfo: { hasNextPage: boolean; endCursor: string | null }
-      }
+    transactions: {
+      edges: Array<{ node: ShopifyTransaction }>
+      pageInfo: { hasNextPage: boolean; endCursor: string | null }
     }
   }>(query, {
     appId: `gid://partners/App/${APP_ID}`,
     after: after || null,
-    types: ['APP_USAGE_SALE', 'APP_SALE_ADJUSTMENT', 'APP_SALE_CREDIT'],
-    ...(createdAtMin ? { createdAtMin } : {}),
+    types: [
+      'APP_USAGE_SALE',
+      'APP_SUBSCRIPTION_SALE',
+      'APP_ONE_TIME_SALE',
+      'APP_SALE_ADJUSTMENT',
+      'APP_SALE_CREDIT',
+    ],
+    createdAtMin: createdAtMin ?? null,
   })
 
-  const txns = data.app.transactions
+  const txns = data.transactions
+  if (!txns) {
+    throw new Error('Shopify Partner API returned no transactions connection')
+  }
 
   return {
     transactions: txns.edges.map((e) => e.node),
@@ -150,9 +176,6 @@ export async function getAppTransactions(
   }
 }
 
-/**
- * Fetch ALL historical transactions with automatic pagination.
- */
 export async function getAllAppTransactions(
   createdAtMin?: string
 ): Promise<ShopifyTransaction[]> {

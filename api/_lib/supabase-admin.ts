@@ -45,3 +45,24 @@ export const supabaseAdmin: SupabaseClient = new Proxy({} as SupabaseClient, {
     return typeof value === 'function' ? (value as Function).bind(client) : value
   },
 })
+
+/** Page through a table — PostgREST caps each response at 1000 rows. */
+export async function fetchAllRows<T extends Record<string, unknown>>(
+  table: string,
+  columns: string
+): Promise<T[]> {
+  const PAGE = 1000
+  const all: T[] = []
+  let from = 0
+  for (;;) {
+    const { data, error } = await supabaseAdmin
+      .from(table)
+      .select(columns)
+      .range(from, from + PAGE - 1)
+    if (error) throw error
+    all.push(...((data ?? []) as T[]))
+    if (!data || data.length < PAGE) break
+    from += PAGE
+  }
+  return all
+}

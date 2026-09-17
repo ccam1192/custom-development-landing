@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { requireAuth } from '../../_lib/auth.js'
-import { supabaseAdmin } from '../../_lib/supabase-admin.js'
+import { supabaseAdmin, fetchAllRows } from '../../_lib/supabase-admin.js'
 import { isShopifyConfigured, getAllAppTransactions } from '../../_lib/shopify.js'
 
 export const config = { maxDuration: 300 }
@@ -50,44 +50,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const transactions = await getAllAppTransactions(createdAtMin)
     console.log(`[Shopify Sync] Got ${transactions.length} transactions`)
 
+    const shopCustomers = await fetchAllRows<{
+      id: string
+      shopify_shop_domain: string | null
+      store_url: string | null
+    }>('crm_customers', 'id, shopify_shop_domain, store_url')
+    const crmByDomain = new Map<string, string>()
+    for (const c of shopCustomers) {
+      if (c.shopify_shop_domain) crmByDomain.set(c.shopify_shop_domain.toLowerCase(), c.id)
+      if (c.store_url) {
+        const host = String(c.store_url).replace(/^https?:\/\//, '').split('/')[0].toLowerCase()
+        if (host) crmByDomain.set(host, c.id)
+      }
+    }
+
     for (const tx of transactions) {
       processed++
       try {
-        // Determine transaction type
         let txType: string
-        let amount: number
+        const amount = parseFloat(tx.grossAmount?.amount ?? tx.netAmount?.amount ?? '0')
 
-        switch (tx.type) {
-          case 'APP_USAGE_SALE':
+        switch (tx.__typename) {
+          case 'AppUsageSale':
             txType = 'app_usage_sale'
-            amount = parseFloat(tx.grossAmount?.amount ?? '0')
             break
-          case 'APP_SALE_ADJUSTMENT':
+          case 'AppSaleAdjustment':
             txType = 'app_sale_adjustment'
-            amount = parseFloat(tx.grossAmount?.amount ?? '0')
             break
-          case 'APP_SALE_CREDIT':
+          case 'AppSaleCredit':
             txType = 'app_sale_credit'
-            amount = parseFloat(tx.grossAmount?.amount ?? '0')
             break
           default:
             txType = 'payment'
-            amount = parseFloat(tx.grossAmount?.amount ?? '0')
         }
 
         const status = amount >= 0 ? 'succeeded' : 'adjusted'
-
-        // Find CRM customer by Shopify domain
-        let crmCustomerId: string | null = null
-        if (tx.shop?.myshopifyDomain) {
-          const { data } = await supabaseAdmin
-            .from('crm_customers')
-            .select('id')
-            .eq('shopify_shop_domain', tx.shop.myshopifyDomain)
-            .limit(1)
-            .single()
-          crmCustomerId = data?.id ?? null
-        }
+        const domain = tx.shop?.myshopifyDomain?.toLowerCase() ?? null
+        const crmCustomerId = domain ? crmByDomain.get(domain) ?? null : null
 
         await supabaseAdmin
           .from('crm_revenue_transactions')
@@ -106,11 +105,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               shopify_gross_amount: tx.grossAmount ? parseFloat(tx.grossAmount.amount) : null,
               shopify_net_amount: tx.netAmount ? parseFloat(tx.netAmount.amount) : null,
               shopify_fee: tx.shopifyFee ? parseFloat(tx.shopifyFee.amount) : null,
-              shopify_processing_fee: tx.processingFee ? parseFloat(tx.processingFee.amount) : null,
-              shopify_regulatory_fee: tx.regulatoryOperatingFee
-                ? parseFloat(tx.regulatoryOperatingFee.amount)
-                : null,
-              description: `Shopify ${tx.type} for ${tx.shop?.name ?? tx.shop?.myshopifyDomain ?? 'unknown shop'}`,
+              shopify_processing_fee: null,
+              shopify_regulatory_fee: null,
+              description: `Shopify ${tx.__typename} for ${tx.shop?.name ?? tx.shop?.myshopifyDomain ?? 'unknown shop'}`,
             },
             { onConflict: 'provider,provider_transaction_id' }
           )
