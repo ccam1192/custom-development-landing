@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { requireAuth } from '../../_lib/auth'
-import { isBoardroomConfigured } from '../../_lib/boardroom'
-import { isStripeConfigured } from '../../_lib/stripe'
-import { isShopifyConfigured } from '../../_lib/shopify'
+import { requireAuth } from '../../_lib/auth.js'
+import { isBoardroomConfigured } from '../../_lib/boardroom.js'
+import { isStripeConfigured } from '../../_lib/stripe.js'
+import { isShopifyConfigured } from '../../_lib/shopify.js'
 
 export const config = { maxDuration: 300 }
 

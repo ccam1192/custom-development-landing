@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { supabaseAdmin } from '../_lib/supabase-admin'
-import { constructWebhookEvent, isStripeConfigured } from '../_lib/stripe'
-import { determineClientStatus, calculateMrr } from '../_lib/status-engine'
+import { supabaseAdmin } from '../_lib/supabase-admin.js'
+import { constructWebhookEvent, isStripeConfigured } from '../_lib/stripe.js'
+import { determineClientStatus, calculateMrr } from '../_lib/status-engine.js'
 import type Stripe from 'stripe'
 
 /**

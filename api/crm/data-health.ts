@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { requireAuth } from '../_lib/auth'
-import { supabaseAdmin } from '../_lib/supabase-admin'
+import { requireAuth } from '../_lib/auth.js'
+import { supabaseAdmin } from '../_lib/supabase-admin.js'
 
 /**
  * Data Health Check — scans for data quality issues

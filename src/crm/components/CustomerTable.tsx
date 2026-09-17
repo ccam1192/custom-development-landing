@@ -186,10 +186,10 @@ export default function CustomerTable({
                 <SortHeader label="Cancel Date" field="cancellation_date" currentField={sortField} currentDir={sortDirection} onSort={onSort} />
               </th>
               <th className="px-3 py-3 text-right">
-                <SortHeader label="MRR" field="calculated_mrr" currentField={sortField} currentDir={sortDirection} onSort={onSort} />
+                <SortHeader label="MRR" field="effective_mrr" currentField={sortField} currentDir={sortDirection} onSort={onSort} />
               </th>
               <th className="px-3 py-3 text-right">
-                <SortHeader label="Revenue" field="calculated_total_revenue" currentField={sortField} currentDir={sortDirection} onSort={onSort} />
+                <SortHeader label="Revenue" field="effective_total_revenue" currentField={sortField} currentDir={sortDirection} onSort={onSort} />
               </th>
               <th className="px-3 py-3 text-left hidden 2xl:table-cell">
                 <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Notes</span>

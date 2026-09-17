@@ -88,18 +88,18 @@ export function useCustomers(): UseCustomersReturn {
         query = query.lte('cancellation_date', filters.cancellation_date_to)
       }
 
-      // Numeric range filters (using coalesce via calculated fields)
+      // Numeric range filters (using generated columns that COALESCE override + calculated)
       if (filters.mrr_min != null) {
-        query = query.gte('calculated_mrr', filters.mrr_min)
+        query = query.gte('effective_mrr', filters.mrr_min)
       }
       if (filters.mrr_max != null) {
-        query = query.lte('calculated_mrr', filters.mrr_max)
+        query = query.lte('effective_mrr', filters.mrr_max)
       }
       if (filters.revenue_min != null) {
-        query = query.gte('calculated_total_revenue', filters.revenue_min)
+        query = query.gte('effective_total_revenue', filters.revenue_min)
       }
       if (filters.revenue_max != null) {
-        query = query.lte('calculated_total_revenue', filters.revenue_max)
+        query = query.lte('effective_total_revenue', filters.revenue_max)
       }
 
       // Sorting

@@ -89,6 +89,8 @@ export interface CrmCustomer {
   mailerlite_group: string | null
   mailerlite_sequence_status: string | null
   mailerlite_last_synced: string | null
+  effective_mrr: number
+  effective_total_revenue: number
   created_at: string
   updated_at: string
   updated_by: string | null

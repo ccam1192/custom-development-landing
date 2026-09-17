@@ -1,7 +1,13 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { requireAuth } from '../../_lib/auth'
-import { supabaseAdmin } from '../../_lib/supabase-admin'
-import { determineClientStatus, calculateMrr } from '../../_lib/status-engine'
+import { requireAuth } from '../../_lib/auth.js'
+import { supabaseAdmin } from '../../_lib/supabase-admin.js'
+import { determineClientStatus, calculateMrr } from '../../_lib/status-engine.js'
+import {
+  isStripeConfigured,
+  getAllStripeCustomers,
+  getAllStripeSubscriptions,
+  getPaidInvoices,
+} from '../../_lib/stripe.js'
 
 export const config = { maxDuration: 120 }
 
@@ -11,10 +17,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const user = await requireAuth(req, res)
     if (!user) return
-
-    // Late-import Stripe to catch module errors
-    const { isStripeConfigured, getAllStripeCustomers, getAllStripeSubscriptions, getPaidInvoices } =
-      await import('../../_lib/stripe')
 
     if (!isStripeConfigured()) {
       return res.status(503).json({ error: 'Stripe not configured. Set STRIPE_SECRET_KEY.' })

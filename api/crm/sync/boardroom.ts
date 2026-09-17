@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { requireAuth } from '../../_lib/auth'
-import { supabaseAdmin } from '../../_lib/supabase-admin'
-import { getBoardroomUsers, isBoardroomConfigured } from '../../_lib/boardroom'
-import { determineClientStatus, calculateMrr } from '../../_lib/status-engine'
+import { requireAuth } from '../../_lib/auth.js'
+import { supabaseAdmin } from '../../_lib/supabase-admin.js'
+import { getBoardroomUsers, isBoardroomConfigured } from '../../_lib/boardroom.js'
+import { determineClientStatus, calculateMrr } from '../../_lib/status-engine.js'
 
 export const config = { maxDuration: 120 }
 

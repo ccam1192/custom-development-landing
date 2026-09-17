@@ -29,7 +29,7 @@ export function useKpis() {
       // For large datasets, this should move to a database function/view
       const { data, error: err } = await supabase
         .from('crm_customers')
-        .select('client_status, calculated_mrr, mrr_override, calculated_total_revenue, total_revenue_override')
+        .select('client_status, effective_mrr, effective_total_revenue, calculated_total_revenue, total_revenue_override')
 
       if (err) {
         setError(err.message)
@@ -49,12 +49,12 @@ export function useKpis() {
       let mrr = 0
 
       for (const c of customers) {
-        const rev = c.total_revenue_override ?? c.calculated_total_revenue ?? 0
+        const rev = c.effective_total_revenue ?? 0
         totalRevenue += rev
         if (rev > 0) lifetimePayingCustomers++
         if (c.client_status === 'canceled' && rev > 0) customerCancellations++
         if (c.client_status === 'active_customer') {
-          mrr += c.mrr_override ?? c.calculated_mrr ?? 0
+          mrr += c.effective_mrr ?? 0
         }
       }
 

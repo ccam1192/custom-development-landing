@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { requireAuth } from '../../_lib/auth'
-import { supabaseAdmin } from '../../_lib/supabase-admin'
+import { requireAuth } from '../../_lib/auth.js'
+import { supabaseAdmin } from '../../_lib/supabase-admin.js'
+import { isShopifyConfigured, getAllAppTransactions } from '../../_lib/shopify.js'
 
 export const config = { maxDuration: 120 }
 
@@ -10,9 +11,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const user = await requireAuth(req, res)
     if (!user) return
-
-    const { isShopifyConfigured, getAllAppTransactions } =
-      await import('../../_lib/shopify')
 
     if (!isShopifyConfigured()) {
       return res.status(503).json({

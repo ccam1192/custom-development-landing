@@ -1,10 +1,13 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
+import { supabaseAdmin } from '../_lib/supabase-admin.js'
+import { isStripeConfigured, getStripe } from '../_lib/stripe.js'
+import { isShopifyConfigured } from '../_lib/shopify.js'
 
 export const config = { maxDuration: 30 }
 
 /**
  * Diagnostic endpoint — returns which env vars are set (not their values)
- * and tests module imports. No auth required so we can debug auth failures too.
+ * and tests module imports / connectivity.
  */
 export default async function handler(_req: VercelRequest, res: VercelResponse) {
   const checks: Record<string, unknown> = {}
@@ -31,7 +34,6 @@ export default async function handler(_req: VercelRequest, res: VercelResponse) 
 
   // 2. Supabase admin client
   try {
-    const { supabaseAdmin } = await import('../_lib/supabase-admin')
     const { count } = await supabaseAdmin
       .from('crm_customers')
       .select('*', { count: 'exact', head: true })
@@ -42,10 +44,8 @@ export default async function handler(_req: VercelRequest, res: VercelResponse) 
 
   // 3. Stripe SDK
   try {
-    const { isStripeConfigured } = await import('../_lib/stripe')
     checks.stripe = { configured: isStripeConfigured() }
     if (isStripeConfigured()) {
-      const { getStripe } = await import('../_lib/stripe')
       const stripe = getStripe()
       const acct = await stripe.accounts.retrieve()
       checks.stripe = { configured: true, ok: true, accountId: acct.id }
@@ -56,13 +56,12 @@ export default async function handler(_req: VercelRequest, res: VercelResponse) 
 
   // 4. Shopify Partner API
   try {
-    const { isShopifyConfigured } = await import('../_lib/shopify')
     checks.shopify = { configured: isShopifyConfigured() }
   } catch (e) {
     checks.shopify = { ok: false, error: e instanceof Error ? e.message : String(e) }
   }
 
-  // 5. Node version
+  // 5. Runtime info
   checks.nodeVersion = process.version
   checks.timestamp = new Date().toISOString()
 
