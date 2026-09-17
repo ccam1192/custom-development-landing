@@ -50,9 +50,20 @@ export function useSyncStatus() {
           },
         })
 
+        const contentType = res.headers.get('content-type') ?? ''
         if (!res.ok) {
-          const body = await res.json().catch(() => ({ error: 'Sync failed' }))
-          setError(body.error ?? 'Sync failed')
+          if (contentType.includes('application/json')) {
+            const body = await res.json().catch(() => ({ error: 'Sync failed' }))
+            setError(`${provider} sync: ${body.error ?? `HTTP ${res.status}`}`)
+          } else {
+            const text = await res.text().catch(() => '')
+            setError(`${provider} sync: HTTP ${res.status}${text ? ` — ${text.substring(0, 200)}` : ''}`)
+          }
+        } else {
+          const body = await res.json().catch(() => null)
+          if (body) {
+            console.log(`[CRM] ${provider} sync result:`, body)
+          }
         }
 
         await fetchStates()

@@ -228,30 +228,34 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
         // Build record — only set fields that aren't authoritative API fields
         const record: Record<string, unknown> = {}
 
+        const str = (v: unknown): string => (v == null ? '' : String(v).trim())
+
         if (name) record.name = name
         if (email) record.email = email
-        if (mapping.store_url && row[mapping.store_url]) record.store_url = row[mapping.store_url].trim()
+        if (mapping.store_url && row[mapping.store_url]) record.store_url = str(row[mapping.store_url])
         if (mapping.signup_date && row[mapping.signup_date]) {
           const parsed = new Date(row[mapping.signup_date])
           if (!isNaN(parsed.getTime())) record.signup_date = parsed.toISOString()
         }
-        if (mapping.user_type && row[mapping.user_type]) record.user_type = parseUserType(row[mapping.user_type])
-        if (mapping.billing_channel && row[mapping.billing_channel]) record.billing_channel = parseBillingChannel(row[mapping.billing_channel])
-        if (mapping.client_status && row[mapping.client_status]) record.client_status = parseStatus(row[mapping.client_status])
+        if (mapping.user_type && row[mapping.user_type]) record.user_type = parseUserType(str(row[mapping.user_type]))
+        if (mapping.billing_channel && row[mapping.billing_channel]) record.billing_channel = parseBillingChannel(str(row[mapping.billing_channel]))
+        if (mapping.client_status && row[mapping.client_status]) record.client_status = parseStatus(str(row[mapping.client_status]))
         if (mapping.cancellation_date && row[mapping.cancellation_date]) {
           const parsed = new Date(row[mapping.cancellation_date])
           if (!isNaN(parsed.getTime())) record.cancellation_date = parsed.toISOString()
         }
-        if (mapping.source && row[mapping.source]) record.source = parseSource(row[mapping.source])
-        if (mapping.notes && row[mapping.notes]) record.notes = row[mapping.notes].trim()
+        if (mapping.source && row[mapping.source]) record.source = parseSource(str(row[mapping.source]))
+        if (mapping.notes && row[mapping.notes]) record.notes = str(row[mapping.notes])
 
         // MRR and Revenue from spreadsheet go to override ONLY if no existing calculated value
-        if (mapping.mrr && row[mapping.mrr]) {
-          const val = parseFloat(row[mapping.mrr].replace(/[$,]/g, ''))
+        if (mapping.mrr && row[mapping.mrr] != null && row[mapping.mrr] !== '') {
+          const raw = row[mapping.mrr]
+          const val = typeof raw === 'number' ? raw : parseFloat(String(raw).replace(/[$,]/g, ''))
           if (!isNaN(val) && val > 0) record.mrr_override = val
         }
-        if (mapping.total_revenue && row[mapping.total_revenue]) {
-          const val = parseFloat(row[mapping.total_revenue].replace(/[$,]/g, ''))
+        if (mapping.total_revenue && row[mapping.total_revenue] != null && row[mapping.total_revenue] !== '') {
+          const raw = row[mapping.total_revenue]
+          const val = typeof raw === 'number' ? raw : parseFloat(String(raw).replace(/[$,]/g, ''))
           if (!isNaN(val) && val > 0) record.total_revenue_override = val
         }
 

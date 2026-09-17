@@ -38,7 +38,7 @@ export default function CrmDashboardPage() {
     refresh,
   } = useCustomers()
   const { kpis, loading: kpisLoading, refresh: refreshKpis } = useKpis()
-  const { states, syncing, triggerSync } = useSyncStatus()
+  const { states, syncing, error: syncError, triggerSync } = useSyncStatus()
 
   const [viewCustomer, setViewCustomer] = useState<CrmCustomer | null>(null)
   const [editCustomer, setEditCustomer] = useState<CrmCustomer | null>(null)
@@ -105,7 +105,12 @@ export default function CrmDashboardPage() {
           {/* KPI cards */}
           <KpiCards kpis={kpis} loading={kpisLoading} />
 
-          {/* Error banner */}
+          {/* Error banners */}
+          {syncError && (
+            <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
+              <strong>Sync error:</strong> {syncError}
+            </div>
+          )}
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
               {error}
