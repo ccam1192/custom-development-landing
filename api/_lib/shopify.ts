@@ -173,10 +173,21 @@ const SALE_FIELDS = `
  */
 export async function getAppTransactions(
   after?: string | null,
-  createdAtMin?: string
+  createdAtMin?: string,
+  createdAtMax?: string
 ): Promise<TransactionsPage> {
-  const extraVar = createdAtMin ? ', $createdAtMin: DateTime' : ''
-  const extraArg = createdAtMin ? 'createdAtMin: $createdAtMin' : ''
+  const extraVars: string[] = []
+  const extraArgs: string[] = []
+  if (createdAtMin) {
+    extraVars.push('$createdAtMin: DateTime')
+    extraArgs.push('createdAtMin: $createdAtMin')
+  }
+  if (createdAtMax) {
+    extraVars.push('$createdAtMax: DateTime')
+    extraArgs.push('createdAtMax: $createdAtMax')
+  }
+  const extraVar = extraVars.length ? `, ${extraVars.join(', ')}` : ''
+  const extraArg = extraArgs.join('\n        ')
 
   const query = `
     query AppTransactions($appId: ID!, $after: String, $types: [TransactionType!]${extraVar}) {
@@ -223,6 +234,7 @@ export async function getAppTransactions(
       'APP_SALE_CREDIT',
     ],
     ...(createdAtMin ? { createdAtMin } : {}),
+    ...(createdAtMax ? { createdAtMax } : {}),
   })
 
   const txns = data.transactions

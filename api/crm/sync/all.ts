@@ -21,7 +21,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const authHeader = req.headers.authorization ?? ''
 
   // Helper to call internal sync endpoints
-  async function callSync(provider: string): Promise<{ success: boolean; error?: string }> {
+  async function callSync(provider: string): Promise<{ success: boolean; error?: string; continue?: boolean }> {
     try {
       const protocol = req.headers['x-forwarded-proto'] ?? 'https'
       const host = req.headers.host ?? ''
@@ -33,6 +33,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           'Content-Type': 'application/json',
           Authorization: authHeader,
         },
+        body: provider === 'shopify' ? JSON.stringify({ mode: 'delta' }) : undefined,
       })
 
       const body = await resp.json().catch(() => ({}))
@@ -61,7 +62,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (isShopifyConfigured()) {
-    results.shopify = await callSync('shopify')
+    let shopify = await callSync('shopify')
+    let rounds = 1
+    while (shopify.success && shopify.continue === true && rounds < 6) {
+      rounds++
+      shopify = await callSync('shopify')
+    }
+    results.shopify = shopify
   } else {
     results.shopify = { success: false, error: 'Not configured' }
   }

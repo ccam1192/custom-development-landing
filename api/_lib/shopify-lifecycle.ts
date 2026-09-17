@@ -21,6 +21,10 @@ export type CrmShopifyCustomer = {
   shopify_shop_id: string | null
   shopify_shop_domain: string | null
   shopify_subscription_id: string | null
+  shopify_subscription_created_at: string | null
+  shopify_trial_ends_at: string | null
+  shopify_cancelled_at: string | null
+  shopify_cancel_effective_on: string | null
   store_url: string | null
   mrr_override: number | null
   cancellation_date: string | null
@@ -49,7 +53,7 @@ export type DerivedShopifyLifecycle = {
 }
 
 const CUSTOMER_COLUMNS =
-  'id, billing_channel, client_status, user_type, shopify_shop_id, shopify_shop_domain, shopify_subscription_id, store_url, mrr_override, cancellation_date, name, email'
+  'id, billing_channel, client_status, user_type, shopify_shop_id, shopify_shop_domain, shopify_subscription_id, shopify_subscription_created_at, shopify_trial_ends_at, shopify_cancelled_at, shopify_cancel_effective_on, store_url, mrr_override, cancellation_date, name, email'
 
 export function normalizeShopDomain(value: string | null | undefined): string | null {
   if (!value) return null
@@ -415,14 +419,16 @@ export function shopifyCustomerUpdateFromLifecycle(input: {
   return {
     nextStatus,
     record: {
-      shopify_shop_id: input.shop.shopId,
+      shopify_shop_id: input.shop.shopId || input.customer.shopify_shop_id,
       shopify_shop_domain: input.shop.domain ?? input.customer.shopify_shop_domain,
       shopify_subscription_id: input.derived.subscriptionId ?? input.customer.shopify_subscription_id,
       shopify_subscription_status: input.derived.shopifyStatus,
-      shopify_subscription_created_at: input.derived.subscriptionCreatedAt,
-      shopify_trial_ends_at: input.derived.trialEndsAt,
-      shopify_cancelled_at: input.derived.cancelledAt,
-      shopify_cancel_effective_on: input.derived.cancelEffectiveOn,
+      shopify_subscription_created_at:
+        input.derived.subscriptionCreatedAt ?? input.customer.shopify_subscription_created_at,
+      shopify_trial_ends_at: input.derived.trialEndsAt ?? input.customer.shopify_trial_ends_at,
+      shopify_cancelled_at: input.derived.cancelledAt ?? input.customer.shopify_cancelled_at,
+      shopify_cancel_effective_on:
+        input.derived.cancelEffectiveOn ?? input.customer.shopify_cancel_effective_on,
       shopify_billing_interval: input.derived.billingInterval,
       shopify_subscription_amount: input.derived.flatRateAmount,
       shopify_cancel_at_end_of_cycle: input.derived.cancelAtEndOfCycle,

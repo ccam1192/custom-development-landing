@@ -45,7 +45,7 @@ export default function CrmDashboardPage() {
     refreshKpis()
   }, [refresh, refreshKpis])
 
-  const { states, syncing, error: syncError, triggerSync } = useSyncStatus(handleRefresh)
+  const { states, syncing, error: syncError, triggerSync, triggerShopifySync, lastShopifyLog, shopifyProgress } = useSyncStatus(handleRefresh)
 
   const [viewCustomer, setViewCustomer] = useState<CrmCustomer | null>(null)
   const [editCustomer, setEditCustomer] = useState<CrmCustomer | null>(null)
@@ -59,7 +59,14 @@ export default function CrmDashboardPage() {
         <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <h1 className="text-xl font-bold text-gray-900">Boardroom CRM</h1>
-            <SyncControls states={states} syncing={syncing} onSync={triggerSync} />
+            <SyncControls
+              states={states}
+              syncing={syncing}
+              lastShopifyLog={lastShopifyLog}
+              shopifyProgress={shopifyProgress}
+              onSync={triggerSync}
+              onShopifySync={triggerShopifySync}
+            />
           </div>
           <div className="flex items-center gap-2">
             <button
