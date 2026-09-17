@@ -82,7 +82,7 @@ export async function getAppTransactions(
   createdAtMin?: string
 ): Promise<TransactionsPage> {
   const query = `
-    query AppTransactions($appId: ID!, $after: String, $types: [AppTransactionType!]${createdAtMin ? ', $createdAtMin: DateTime' : ''}) {
+    query AppTransactions($appId: ID!, $after: String, $types: [TransactionType!]${createdAtMin ? ', $createdAtMin: DateTime' : ''}) {
       app(id: $appId) {
         transactions(
           first: 100

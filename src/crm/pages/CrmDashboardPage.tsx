@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { LogOut, FileSpreadsheet, Activity, AlertTriangle } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useCustomers } from '../hooks/useCustomers'
@@ -38,17 +38,18 @@ export default function CrmDashboardPage() {
     refresh,
   } = useCustomers()
   const { kpis, loading: kpisLoading, refresh: refreshKpis } = useKpis()
-  const { states, syncing, error: syncError, triggerSync } = useSyncStatus()
+
+  const handleRefresh = useCallback(() => {
+    refresh()
+    refreshKpis()
+  }, [refresh, refreshKpis])
+
+  const { states, syncing, error: syncError, triggerSync } = useSyncStatus(handleRefresh)
 
   const [viewCustomer, setViewCustomer] = useState<CrmCustomer | null>(null)
   const [editCustomer, setEditCustomer] = useState<CrmCustomer | null>(null)
   const [showImport, setShowImport] = useState(false)
   const [showSidebar, setShowSidebar] = useState<'health' | 'logs' | null>(null)
-
-  function handleRefresh() {
-    refresh()
-    refreshKpis()
-  }
 
   return (
     <div className="min-h-screen bg-gray-50">

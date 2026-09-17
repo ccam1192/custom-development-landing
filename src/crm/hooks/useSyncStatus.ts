@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../../lib/supabase'
 import type { CrmSyncState, SyncProvider } from '../types'
 
-export function useSyncStatus() {
+export function useSyncStatus(onSyncComplete?: () => void) {
   const [states, setStates] = useState<CrmSyncState[]>([])
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState<SyncProvider | 'all' | null>(null)
@@ -67,13 +67,14 @@ export function useSyncStatus() {
         }
 
         await fetchStates()
+        onSyncComplete?.()
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Sync failed')
       } finally {
         setSyncing(null)
       }
     },
-    [syncing, fetchStates]
+    [syncing, fetchStates, onSyncComplete]
   )
 
   return { states, getState, loading, syncing, error, triggerSync, refresh: fetchStates }

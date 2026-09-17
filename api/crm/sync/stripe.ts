@@ -255,13 +255,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           existingId = crmByEmail.get(merged.email.toLowerCase()) ?? null
         }
 
+        // Always set billing_channel when customer is in Stripe
+        record.billing_channel = 'stripe'
+
         if (existingId) {
           toUpdate.push({ id: existingId, record })
           updated++
         } else {
           record.name = merged.name
           record.email = merged.email
-          record.billing_channel = 'stripe'
           record.source = 'stripe'
           toCreate.push(record)
           created++
