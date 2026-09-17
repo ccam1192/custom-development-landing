@@ -4,6 +4,8 @@ import { isBoardroomConfigured } from '../../_lib/boardroom'
 import { isStripeConfigured } from '../../_lib/stripe'
 import { isShopifyConfigured } from '../../_lib/shopify'
 
+export const config = { maxDuration: 300 }
+
 /**
  * Sync All providers sequentially.
  * Order: Boardroom → Stripe → Shopify

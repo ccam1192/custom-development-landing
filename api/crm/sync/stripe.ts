@@ -1,112 +1,120 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { requireAuth } from '../../_lib/auth'
 import { supabaseAdmin } from '../../_lib/supabase-admin'
-import {
-  isStripeConfigured,
-  getAllStripeCustomers,
-  getAllStripeSubscriptions,
-  getPaidInvoices,
-} from '../../_lib/stripe'
 import { determineClientStatus, calculateMrr } from '../../_lib/status-engine'
+
+export const config = { maxDuration: 120 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
 
-  const user = await requireAuth(req, res)
-  if (!user) return
-
-  if (!isStripeConfigured()) {
-    return res.status(503).json({ error: 'Stripe not configured. Set STRIPE_SECRET_KEY.' })
-  }
-
-  const { data: syncLog } = await supabaseAdmin
-    .from('crm_sync_logs')
-    .insert({ provider: 'stripe', sync_type: 'full' })
-    .select('id')
-    .single()
-
-  const logId = syncLog?.id
-  let processed = 0, created = 0, updated = 0, skipped = 0, errors = 0
-  const errorDetails: Array<{ message: string; record?: string }> = []
-
   try {
+    const user = await requireAuth(req, res)
+    if (!user) return
+
+    // Late-import Stripe to catch module errors
+    const { isStripeConfigured, getAllStripeCustomers, getAllStripeSubscriptions, getPaidInvoices } =
+      await import('../../_lib/stripe')
+
+    if (!isStripeConfigured()) {
+      return res.status(503).json({ error: 'Stripe not configured. Set STRIPE_SECRET_KEY.' })
+    }
+
+    const { data: syncLog } = await supabaseAdmin
+      .from('crm_sync_logs')
+      .insert({ provider: 'stripe', sync_type: 'full' })
+      .select('id')
+      .single()
+
+    const logId = syncLog?.id
+    let processed = 0, created = 0, updated = 0, errors = 0
+    const errorDetails: Array<{ message: string; record?: string }> = []
+
     await supabaseAdmin
       .from('crm_sync_state')
       .update({ status: 'running', last_sync_at: new Date().toISOString() })
       .eq('provider', 'stripe')
 
-    // 1. Sync Stripe Customers & Subscriptions
-    const [customers, subscriptions, invoices] = await Promise.all([
-      getAllStripeCustomers(),
-      getAllStripeSubscriptions(),
-      getPaidInvoices(),
-    ])
+    // Fetch Stripe data sequentially to avoid memory pressure
+    console.log('[Stripe Sync] Fetching customers...')
+    const customers = await getAllStripeCustomers()
+    console.log(`[Stripe Sync] Got ${customers.length} customers`)
 
-    // Build lookup maps
-    const subsByCustomer = new Map<string, typeof subscriptions[0]>()
+    console.log('[Stripe Sync] Fetching subscriptions...')
+    const subscriptions = await getAllStripeSubscriptions()
+    console.log(`[Stripe Sync] Got ${subscriptions.length} subscriptions`)
+
+    console.log('[Stripe Sync] Fetching paid invoices...')
+    const invoices = await getPaidInvoices()
+    console.log(`[Stripe Sync] Got ${invoices.length} invoices`)
+
+    // Build subscription lookup
+    const subsByCustomer = new Map<string, (typeof subscriptions)[0]>()
     for (const sub of subscriptions) {
-      const custId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id
-      // Keep the most recent subscription per customer
-      if (!subsByCustomer.has(custId) || new Date(sub.created * 1000) > new Date(subsByCustomer.get(custId)!.created * 1000)) {
+      const custId = typeof sub.customer === 'string' ? sub.customer : (sub.customer as { id: string }).id
+      const existing = subsByCustomer.get(custId)
+      if (!existing || sub.created > existing.created) {
         subsByCustomer.set(custId, sub)
       }
     }
 
-    // 2. Upsert paid invoices as revenue transactions (idempotent)
+    // Upsert invoices as revenue transactions
     for (const inv of invoices) {
-      if (!inv.id || inv.amount_paid == null || inv.amount_paid <= 0) continue
+      try {
+        if (!inv.id || !inv.amount_paid || inv.amount_paid <= 0) continue
 
-      const customerId = typeof inv.customer === 'string' ? inv.customer : inv.customer?.id
+        const customerId = typeof inv.customer === 'string'
+          ? inv.customer
+          : (inv.customer as { id: string } | null)?.id ?? null
 
-      // Find CRM customer by Stripe customer ID
-      let crmCustomerId: string | null = null
-      if (customerId) {
-        const { data: crmCust } = await supabaseAdmin
-          .from('crm_customers')
-          .select('id')
-          .eq('stripe_customer_id', customerId)
-          .limit(1)
-          .single()
-        crmCustomerId = crmCust?.id ?? null
-      }
+        let crmCustomerId: string | null = null
+        if (customerId) {
+          const { data } = await supabaseAdmin
+            .from('crm_customers')
+            .select('id')
+            .eq('stripe_customer_id', customerId)
+            .limit(1)
+            .single()
+          crmCustomerId = data?.id ?? null
+        }
 
-      const { error: txError } = await supabaseAdmin
-        .from('crm_revenue_transactions')
-        .upsert(
-          {
-            provider: 'stripe' as const,
-            provider_transaction_id: inv.id,
-            provider_customer_id: customerId ?? null,
-            provider_subscription_id:
-              typeof inv.subscription === 'string' ? inv.subscription : inv.subscription?.id ?? null,
-            crm_customer_id: crmCustomerId,
-            amount: inv.amount_paid / 100, // cents to dollars
-            currency: (inv.currency ?? 'usd').toUpperCase(),
-            transaction_date: new Date(inv.created * 1000).toISOString(),
-            status: 'succeeded' as const,
-            transaction_type: 'payment' as const,
-            description: inv.description ?? `Invoice ${inv.number ?? inv.id}`,
-          },
-          { onConflict: 'provider,provider_transaction_id' }
-        )
-
-      if (txError) {
-        errorDetails.push({ message: txError.message, record: inv.id })
+        await supabaseAdmin
+          .from('crm_revenue_transactions')
+          .upsert(
+            {
+              provider: 'stripe',
+              provider_transaction_id: inv.id,
+              provider_customer_id: customerId,
+              provider_subscription_id:
+                typeof inv.subscription === 'string'
+                  ? inv.subscription
+                  : (inv.subscription as { id: string } | null)?.id ?? null,
+              crm_customer_id: crmCustomerId,
+              amount: inv.amount_paid / 100,
+              currency: (inv.currency ?? 'usd').toUpperCase(),
+              transaction_date: new Date((inv as { created: number }).created * 1000).toISOString(),
+              status: 'succeeded',
+              transaction_type: 'payment',
+              description: `Invoice ${(inv as { number?: string }).number ?? inv.id}`,
+            },
+            { onConflict: 'provider,provider_transaction_id' }
+          )
+      } catch (e) {
         errors++
+        errorDetails.push({ message: `Invoice ${inv.id}: ${e instanceof Error ? e.message : String(e)}` })
       }
     }
 
-    // 3. Sync customers into CRM
+    // Sync customers
     for (const cust of customers) {
       processed++
       try {
         const sub = subsByCustomer.get(cust.id)
-        const email = cust.email ?? null
-        const name = cust.name ?? null
+        const email = (cust as { email?: string | null }).email ?? null
+        const name = (cust as { name?: string | null }).name ?? null
 
         // Find existing CRM customer
         let existing: { id: string } | null = null
-
         const { data: byStripe } = await supabaseAdmin
           .from('crm_customers')
           .select('id')
@@ -125,26 +133,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           existing = byEmail
         }
 
-        // Check payment history
-        const { count: paymentCount } = await supabaseAdmin
-          .from('crm_revenue_transactions')
-          .select('*', { count: 'exact', head: true })
-          .eq('provider', 'stripe')
-          .eq('provider_customer_id', cust.id)
-          .eq('status', 'succeeded')
-          .gt('amount', 0)
-
-        const hasPayment = (paymentCount ?? 0) > 0
-
-        // Calculate total revenue from transactions
+        // Calculate revenue from transactions
         const { data: revData } = await supabaseAdmin
           .from('crm_revenue_transactions')
           .select('amount')
-          .eq('provider_customer_id', cust.id)
           .eq('provider', 'stripe')
+          .eq('provider_customer_id', cust.id)
           .eq('status', 'succeeded')
 
         const totalStripeRevenue = (revData ?? []).reduce((sum, r) => sum + (r.amount ?? 0), 0)
+        const hasPayment = totalStripeRevenue > 0
 
         const planAmount = sub?.items?.data?.[0]?.price?.unit_amount ?? null
 
@@ -156,10 +154,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           hasShopifyRevenue: false,
         })
 
-        const calculatedMrr = calculateMrr({
-          clientStatus,
-          stripePlanAmount: planAmount,
-        })
+        const calculatedMrr = calculateMrr({ clientStatus, stripePlanAmount: planAmount })
 
         const record: Record<string, unknown> = {
           stripe_customer_id: cust.id,
@@ -181,22 +176,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         if (existing) {
           await supabaseAdmin.from('crm_customers').update(record).eq('id', existing.id)
-
-          // Update transaction associations
           await supabaseAdmin
             .from('crm_revenue_transactions')
             .update({ crm_customer_id: existing.id })
             .eq('provider', 'stripe')
             .eq('provider_customer_id', cust.id)
             .is('crm_customer_id', null)
-
           updated++
         } else {
           record.name = name
           record.email = email
           record.billing_channel = 'stripe'
           record.source = 'stripe'
-          record.signup_date = new Date(cust.created * 1000).toISOString()
+          record.signup_date = new Date((cust as { created: number }).created * 1000).toISOString()
 
           const { data: newCust } = await supabaseAdmin
             .from('crm_customers')
@@ -212,25 +204,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               .eq('provider_customer_id', cust.id)
               .is('crm_customer_id', null)
           }
-
           created++
         }
       } catch (e) {
         errors++
         errorDetails.push({
-          message: e instanceof Error ? e.message : 'Unknown error',
-          record: cust.email ?? cust.id,
+          message: e instanceof Error ? e.message : String(e),
+          record: (cust as { email?: string }).email ?? cust.id,
         })
       }
     }
 
     await supabaseAdmin
       .from('crm_sync_state')
-      .update({
-        status: 'idle',
-        last_successful_at: new Date().toISOString(),
-        error_message: null,
-      })
+      .update({ status: 'idle', last_successful_at: new Date().toISOString(), error_message: null })
       .eq('provider', 'stripe')
 
     if (logId) {
@@ -242,34 +229,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           records_processed: processed,
           records_created: created,
           records_updated: updated,
-          records_skipped: skipped,
           errors,
           error_details: errorDetails,
         })
         .eq('id', logId)
     }
 
-    return res.json({ success: true, processed, created, updated, errors })
+    return res.json({ success: true, processed, created, updated, errors, invoices: invoices.length })
   } catch (e) {
-    const message = e instanceof Error ? e.message : 'Stripe sync failed'
+    // Top-level catch — return the full error to the client for debugging
+    const message = e instanceof Error ? `${e.message}\n${e.stack}` : String(e)
+    console.error('[Stripe Sync] Fatal error:', message)
 
-    await supabaseAdmin
-      .from('crm_sync_state')
-      .update({ status: 'idle', error_message: message })
-      .eq('provider', 'stripe')
-
-    if (logId) {
+    try {
       await supabaseAdmin
-        .from('crm_sync_logs')
-        .update({
-          completed_at: new Date().toISOString(),
-          status: 'failed',
-          errors: errors + 1,
-          error_details: [...errorDetails, { message }],
-        })
-        .eq('id', logId)
-    }
+        .from('crm_sync_state')
+        .update({ status: 'idle', error_message: message.substring(0, 500) })
+        .eq('provider', 'stripe')
+    } catch { /* ignore */ }
 
-    return res.status(500).json({ error: message })
+    return res.status(500).json({ error: message.substring(0, 1000) })
   }
 }
