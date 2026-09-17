@@ -8,7 +8,7 @@ export type TransactionProvider = 'stripe' | 'shopify' | 'manual'
 export type TransactionStatus = 'succeeded' | 'failed' | 'pending' | 'refunded' | 'adjusted'
 export type TransactionType =
   | 'payment' | 'refund' | 'credit' | 'adjustment'
-  | 'app_usage_sale' | 'app_sale_adjustment' | 'app_sale_credit'
+  | 'app_usage_sale' | 'app_subscription_sale' | 'app_sale_adjustment' | 'app_sale_credit'
 export type SyncProvider = 'boardroom' | 'stripe' | 'shopify' | 'spreadsheet'
 export type SyncStatus = 'running' | 'completed' | 'failed'
 export type DataIssueSeverity = 'warning' | 'error' | 'info'
@@ -76,6 +76,17 @@ export interface CrmCustomer {
   stripe_subscription_id: string | null
   shopify_shop_id: string | null
   shopify_shop_domain: string | null
+  shopify_subscription_id: string | null
+  shopify_subscription_status: string | null
+  shopify_subscription_created_at: string | null
+  shopify_trial_ends_at: string | null
+  shopify_cancelled_at: string | null
+  shopify_cancel_effective_on: string | null
+  shopify_billing_interval: string | null
+  shopify_subscription_amount: number | null
+  shopify_cancel_at_end_of_cycle: boolean | null
+  shopify_pending_update: Record<string, unknown> | null
+  shopify_last_status_sync_at: string | null
   boardroom_subscription_id: string | null
   boardroom_subscription_status: string | null
   agency_parent_id: string | null
@@ -110,6 +121,7 @@ export interface CrmRevenueTransaction {
   status: TransactionStatus
   transaction_type: TransactionType
   shopify_charge_id: string | null
+  shopify_shop_id: string | null
   shopify_shop_domain: string | null
   shopify_gross_amount: number | null
   shopify_net_amount: number | null

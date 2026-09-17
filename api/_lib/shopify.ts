@@ -1,12 +1,11 @@
 /**
  * Shopify Partner API Integration
  *
- * Schema notes (Partner API 2026-01, verified against shopify.dev):
- *   - transactions lives on QueryRoot, NOT App
- *   - PageInfo only has hasNextPage / hasPreviousPage (no endCursor)
- *   - Pagination cursor is on TransactionEdge.cursor
- *   - Transaction interface fields: id, createdAt
- *   - Sale types expose chargeId, grossAmount, netAmount, shopifyFee, shop
+ * Schema notes (Partner API 2026-07):
+ *   - transactions lives on QueryRoot, NOT App (partners App GID)
+ *   - PageInfo for transactions has no endCursor — use TransactionEdge.cursor
+ *   - events + activeSubscription require 2026-07 and shopify App/Shop GIDs
+ *   - events date window max is 365 days
  *
  * Required env:
  *   SHOPIFY_PARTNER_ORG_ID
@@ -18,10 +17,38 @@ const ORG_ID = process.env.SHOPIFY_PARTNER_ORG_ID ?? ''
 const ACCESS_TOKEN = process.env.SHOPIFY_PARTNER_ACCESS_TOKEN ?? ''
 const APP_ID = process.env.SHOPIFY_APP_ID ?? ''
 
-const PARTNER_API_URL = `https://partners.shopify.com/${ORG_ID}/api/2026-01/graphql.json`
+/** 2026-01 has transactions only. events + activeSubscription require 2026-07. */
+const PARTNER_API_VERSION = '2026-07'
+const PARTNER_API_URL = `https://partners.shopify.com/${ORG_ID}/api/${PARTNER_API_VERSION}/graphql.json`
 
 export function isShopifyConfigured(): boolean {
   return !!ORG_ID && !!ACCESS_TOKEN && !!APP_ID
+}
+
+/** Transactions still use partners App GIDs. */
+export function partnerAppGid(): string {
+  return `gid://partners/App/${APP_ID}`
+}
+
+/** events + activeSubscription require shopify App GIDs. */
+export function shopifyAppGid(): string {
+  return `gid://shopify/App/${APP_ID}`
+}
+
+export function toShopifyShopGid(id: string | null | undefined): string | null {
+  if (!id) return null
+  const numeric = id.split('/').pop()
+  if (!numeric) return null
+  return `gid://shopify/Shop/${numeric}`
+}
+
+export function shopGidNumeric(id: string | null | undefined): string | null {
+  if (!id) return null
+  return id.split('/').pop() ?? null
+}
+
+export function shopifyAppNumericId(): string {
+  return APP_ID
 }
 
 interface Money {
@@ -29,7 +56,7 @@ interface Money {
   currencyCode: string
 }
 
-interface ShopifyTransaction {
+export interface ShopifyTransaction {
   id: string
   createdAt: string
   __typename: string
@@ -186,7 +213,7 @@ export async function getAppTransactions(
       pageInfo: { hasNextPage: boolean }
     } | null
   }>(query, {
-    appId: `gid://partners/App/${APP_ID}`,
+    appId: partnerAppGid(),
     after: after || null,
     types: [
       'APP_USAGE_SALE',
@@ -236,4 +263,158 @@ export async function getAllAppTransactions(
   return all
 }
 
-export type { ShopifyTransaction }
+export interface ShopifySubscriptionItem {
+  handle: string | null
+  description: string | null
+  price: {
+    __typename: string
+    amount?: string
+    currency?: string
+    active?: boolean
+  }
+}
+
+export interface ShopifyActiveSubscription {
+  billingPeriod: string
+  cancelAtEndOfCycle: boolean
+  trialEndsAt: string | null
+  legacySubscriptionId: string | null
+  currentBillingCycle: { startTime: string; endTime: string } | null
+  pendingUpdate: {
+    billingPeriod: string
+    legacySubscriptionId: string | null
+    items: ShopifySubscriptionItem[]
+  } | null
+  shop: { id: string; myshopifyDomain: string; name: string }
+  items: ShopifySubscriptionItem[]
+}
+
+export interface ShopifyPartnerEvent {
+  id: string
+  __typename: string
+  occurredAt: string
+  eventType: string
+  shop: { id: string; myshopifyDomain: string; name: string } | null
+  state?: string | null
+  cancelEffectiveOn?: string | null
+  plan?: { handle: string | null; billingPeriod: string | null; trialDays: number | null } | null
+}
+
+export interface HistoricalEventsPage {
+  events: ShopifyPartnerEvent[]
+  hasNextPage: boolean
+  cursor: string | null
+}
+
+const SUBSCRIPTION_EVENT_TYPES = [
+  'SUBSCRIPTION_CREATED',
+  'SUBSCRIPTION_UPDATED',
+  'SUBSCRIPTION_CANCELED',
+  'SUBSCRIPTION_CANCELLATION_SCHEDULED',
+  'SUBSCRIPTION_FROZEN',
+  'SUBSCRIPTION_UNFROZEN',
+  'RELATIONSHIP_INSTALLED',
+  'RELATIONSHIP_UNINSTALLED',
+]
+
+export async function getHistoricalEvents(
+  after?: string | null,
+  occurredAtMin?: string,
+  occurredAtMax?: string
+): Promise<HistoricalEventsPage> {
+  const query = `
+    query HistoricalEvents($filter: EventFilterInput, $after: String) {
+      events(first: 100, after: $after, filter: $filter, orderBy: OCCURRED_AT_ASC) {
+        pageInfo { hasNextPage endCursor }
+        edges {
+          node {
+            __typename
+            id
+            occurredAt
+            eventType
+            shop { id myshopifyDomain name }
+            ... on SubscriptionStatus {
+              state
+              cancelEffectiveOn
+              plan { handle billingPeriod trialDays }
+            }
+            ... on Relationship {
+              state
+            }
+          }
+        }
+      }
+    }
+  `
+
+  const data = await partnerQuery<{
+    events: {
+      pageInfo: { hasNextPage: boolean; endCursor: string | null }
+      edges: Array<{ node: ShopifyPartnerEvent }>
+    } | null
+  }>(query, {
+    after: after || null,
+    filter: {
+      subjectType: 'APP',
+      subjectId: shopifyAppGid(),
+      eventTypes: SUBSCRIPTION_EVENT_TYPES,
+      ...(occurredAtMin ? { occurredAtMin } : {}),
+      ...(occurredAtMax ? { occurredAtMax } : {}),
+    },
+  })
+
+  const conn = data.events
+  if (!conn) throw new Error('Shopify Partner API returned no events connection')
+
+  return {
+    events: conn.edges.map((e) => e.node),
+    hasNextPage: conn.pageInfo.hasNextPage,
+    cursor: conn.pageInfo.endCursor,
+  }
+}
+
+export async function getActiveSubscription(
+  shopId: string
+): Promise<ShopifyActiveSubscription | null> {
+  const query = `
+    query ActiveSub($appId: ID!, $shopId: ID!) {
+      activeSubscription(appId: $appId, shopId: $shopId) {
+        billingPeriod
+        cancelAtEndOfCycle
+        trialEndsAt
+        legacySubscriptionId
+        currentBillingCycle { startTime endTime }
+        pendingUpdate {
+          billingPeriod
+          legacySubscriptionId
+          items {
+            handle
+            description
+            price {
+              __typename
+              ... on FlatRatePrice { amount currency active }
+              ... on TieredPrice { currency active }
+            }
+          }
+        }
+        shop { id myshopifyDomain name }
+        items {
+          handle
+          description
+          price {
+            __typename
+            ... on FlatRatePrice { amount currency active }
+            ... on TieredPrice { currency active }
+          }
+        }
+      }
+    }
+  `
+
+  const data = await partnerQuery<{ activeSubscription: ShopifyActiveSubscription | null }>(query, {
+    appId: shopifyAppGid(),
+    shopId: toShopifyShopGid(shopId) ?? shopId,
+  })
+
+  return data.activeSubscription ?? null
+}

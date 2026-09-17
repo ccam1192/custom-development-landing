@@ -42,12 +42,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       processed++
       try {
         // Check for existing customer by Boardroom user ID
-        const { data: existing } = await supabaseAdmin
+        const { data: existingByBoardroom } = await supabaseAdmin
           .from('crm_customers')
-          .select('id, notes, mrr_override, total_revenue_override, client_status')
+          .select('id, notes, mrr_override, total_revenue_override, client_status, billing_channel, name, email, shopify_shop_id, shopify_shop_domain')
           .eq('boardroom_user_id', bu.id)
           .limit(1)
-          .single()
+          .maybeSingle()
+
+        let existing = existingByBoardroom
+
+        if (!existing && bu.shopifyShopId) {
+          const { data: byShopId } = await supabaseAdmin
+            .from('crm_customers')
+            .select('id, notes, mrr_override, total_revenue_override, client_status, billing_channel, name, email, shopify_shop_id, shopify_shop_domain')
+            .eq('shopify_shop_id', String(bu.shopifyShopId).split('/').pop())
+            .limit(1)
+            .maybeSingle()
+          existing = byShopId
+        }
+
+        if (!existing && bu.shopifyShopDomain) {
+          const domain = String(bu.shopifyShopDomain).replace(/^https?:\/\//, '').split('/')[0].toLowerCase()
+          const { data: byDomain } = await supabaseAdmin
+            .from('crm_customers')
+            .select('id, notes, mrr_override, total_revenue_override, client_status, billing_channel, name, email, shopify_shop_id, shopify_shop_domain')
+            .ilike('shopify_shop_domain', domain)
+            .limit(1)
+            .maybeSingle()
+          existing = byDomain
+        }
 
         // Also check for payment history
         let hasPayment = false
@@ -89,24 +112,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           billingChannel: bu.billingChannel,
         })
 
-        const record = {
+        const shopifyOwned = existing?.billing_channel === 'shopify'
+        const record: Record<string, unknown> = {
           boardroom_user_id: bu.id,
-          name: bu.name,
-          email: bu.email,
+          name: bu.name ?? existing?.name ?? null,
+          email: bu.email ?? existing?.email ?? null,
           store_url: bu.storeUrl ?? null,
           signup_date: bu.signupDate ?? null,
           user_type: bu.userType ?? 'standard',
-          billing_channel: bu.billingChannel ?? 'none',
           boardroom_subscription_id: bu.subscriptionId ?? null,
           boardroom_subscription_status: bu.subscriptionStatus ?? null,
           agency_parent_id: bu.agencyParentId ?? null,
           stripe_customer_id: bu.stripeCustomerId ?? null,
           stripe_subscription_id: bu.stripeSubscriptionId ?? null,
-          shopify_shop_id: bu.shopifyShopId ?? null,
-          shopify_shop_domain: bu.shopifyShopDomain ?? null,
-          client_status: clientStatus,
-          calculated_mrr: calculatedMrr,
+          shopify_shop_id: existing?.shopify_shop_id ?? bu.shopifyShopId ?? null,
+          shopify_shop_domain: existing?.shopify_shop_domain ?? bu.shopifyShopDomain ?? null,
           last_synced_at: new Date().toISOString(),
+        }
+
+        if (!shopifyOwned) {
+          record.billing_channel = bu.billingChannel ?? 'none'
+          record.client_status = clientStatus
+          record.calculated_mrr = calculatedMrr
         }
 
         if (existing) {

@@ -77,6 +77,56 @@ export function determineClientStatus(input: StatusInput): ClientStatus {
 /**
  * Calculate MRR for a customer based on their subscription data.
  */
+export type ShopifyLifecycleState =
+  | 'ACTIVE'
+  | 'TRIAL'
+  | 'FROZEN'
+  | 'CANCELED'
+  | 'CANCELLATION_SCHEDULED'
+  | 'NONE'
+
+export function determineShopifyClientStatus(input: {
+  previousCrmStatus?: ClientStatus | null
+  userType?: string | null
+  lifecycle: ShopifyLifecycleState
+  hasConfirmedPayment: boolean
+}): ClientStatus {
+  if (input.userType === 'agency_client') return 'agency_client'
+
+  if (input.lifecycle === 'FROZEN') {
+    if (input.previousCrmStatus === 'active_customer' || input.hasConfirmedPayment) {
+      return 'active_customer'
+    }
+    if (input.previousCrmStatus === 'in_trial') return 'in_trial'
+    return 'in_trial'
+  }
+
+  if (input.lifecycle === 'CANCELED' || input.lifecycle === 'CANCELLATION_SCHEDULED') {
+    return 'canceled'
+  }
+
+  if (input.lifecycle === 'ACTIVE' || input.lifecycle === 'TRIAL') {
+    return input.hasConfirmedPayment ? 'active_customer' : 'in_trial'
+  }
+
+  // No current managed-pricing subscription
+  if (input.hasConfirmedPayment) return 'canceled'
+  return 'prospect'
+}
+
+export function shopifyFlatRateMrr(input: {
+  lifecycle: ShopifyLifecycleState
+  billingPeriod?: string | null
+  flatRateAmount?: number | null
+}): number {
+  if (input.lifecycle === 'CANCELED' || input.lifecycle === 'CANCELLATION_SCHEDULED') return 0
+  if (input.lifecycle === 'TRIAL' || input.lifecycle === 'NONE') return 0
+  if (!input.flatRateAmount || input.flatRateAmount <= 0) return 0
+  if (input.billingPeriod === 'ANNUAL') return input.flatRateAmount / 12
+  if (input.billingPeriod === 'EVERY_30_DAYS') return input.flatRateAmount
+  return 0
+}
+
 export function calculateMrr(input: {
   clientStatus: ClientStatus
   userType?: string | null

@@ -57,16 +57,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       email: string | null
       stripe_customer_id: string | null
       client_status: string | null
+      billing_channel: string | null
       name: string | null
-    }>('crm_customers', 'id, email, stripe_customer_id, client_status, name')
+    }>('crm_customers', 'id, email, stripe_customer_id, client_status, billing_channel, name')
 
     const crmByStripeId = new Map<string, string>()
     const crmByEmail = new Map<string, string>()
     const crmStatusById = new Map<string, string>()
+    const crmBillingById = new Map<string, string>()
     for (const c of existingCrm) {
       if (c.stripe_customer_id) crmByStripeId.set(c.stripe_customer_id, c.id)
       if (c.email) crmByEmail.set(c.email.toLowerCase().trim(), c.id)
       crmStatusById.set(c.id, c.client_status ?? 'prospect')
+      crmBillingById.set(c.id, c.billing_channel ?? 'none')
     }
     console.log(`[Stripe Sync] Loaded ${existingCrm.length} existing CRM customers for matching`)
 
@@ -265,6 +268,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           existingId = crmByEmail.get(merged.email.toLowerCase().trim()) ?? null
         }
         if (existingId === 'pending') existingId = null
+
+        // Shopify is authoritative for Shopify-billed customers.
+        if (existingId && crmBillingById.get(existingId) === 'shopify') {
+          const stripeOnly: Record<string, unknown> = {
+            last_synced_at: new Date().toISOString(),
+          }
+          if (merged.primaryId) stripeOnly.stripe_customer_id = merged.primaryId
+          toUpdate.push({ id: existingId, record: stripeOnly })
+          continue
+        }
 
         // Skip empty Stripe shell customers (no email, no payment, no live sub)
         const hasLiveSub = !!sub && ACTIVE_STATUSES.has(sub.status)

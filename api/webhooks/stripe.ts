@@ -22,6 +22,7 @@ type CrmRow = {
   cancellation_date: string | null
   email: string | null
   name: string | null
+  billing_channel: string | null
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -86,10 +87,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
+const CRM_WEBHOOK_COLUMNS =
+  'id, user_type, boardroom_subscription_status, cancellation_date, email, name, billing_channel'
+
 async function findCrmByStripeId(stripeCustomerId: string): Promise<CrmRow | null> {
   const { data } = await supabaseAdmin
     .from('crm_customers')
-    .select('id, user_type, boardroom_subscription_status, cancellation_date, email, name')
+    .select(CRM_WEBHOOK_COLUMNS)
     .eq('stripe_customer_id', stripeCustomerId)
     .limit(1)
     .maybeSingle()
@@ -99,7 +103,7 @@ async function findCrmByStripeId(stripeCustomerId: string): Promise<CrmRow | nul
 async function findCrmByEmail(email: string): Promise<CrmRow | null> {
   const { data } = await supabaseAdmin
     .from('crm_customers')
-    .select('id, user_type, boardroom_subscription_status, cancellation_date, email, name')
+    .select(CRM_WEBHOOK_COLUMNS)
     .ilike('email', email.trim())
     .limit(1)
     .maybeSingle()
@@ -141,16 +145,17 @@ async function findOrCreateCrmCustomer(
   if (email) {
     const byEmail = await findCrmByEmail(email)
     if (byEmail) {
+      const isShopify = byEmail.billing_channel === 'shopify'
       await supabaseAdmin
         .from('crm_customers')
         .update({
           stripe_customer_id: stripeId,
-          billing_channel: 'stripe',
           last_synced_at: new Date().toISOString(),
+          ...(isShopify ? {} : { billing_channel: 'stripe' }),
           ...(name && !byEmail.name ? { name } : {}),
         })
         .eq('id', byEmail.id)
-      return { ...byEmail, name: byEmail.name ?? name }
+      return { ...byEmail, name: byEmail.name ?? name, stripe_customer_id: stripeId } as CrmRow
     }
   }
 
@@ -167,7 +172,7 @@ async function findOrCreateCrmCustomer(
       client_status: 'prospect',
       last_synced_at: new Date().toISOString(),
     })
-    .select('id, user_type, boardroom_subscription_status, cancellation_date, email, name')
+    .select(CRM_WEBHOOK_COLUMNS)
     .single()
 
   if (error) {
@@ -209,6 +214,7 @@ async function handleSubscriptionEvent(sub: Stripe.Subscription) {
     stripePlanAmount: planAmount,
   })
 
+  const shopifyOwned = customer.billing_channel === 'shopify'
   await supabaseAdmin
     .from('crm_customers')
     .update({
@@ -222,13 +228,17 @@ async function handleSubscriptionEvent(sub: Stripe.Subscription) {
       stripe_plan_amount: planAmount,
       stripe_cancel_at: sub.cancel_at ? new Date(sub.cancel_at * 1000).toISOString() : null,
       stripe_canceled_at: sub.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
-      billing_channel: 'stripe',
-      client_status: clientStatus,
-      calculated_mrr: calculatedMrr,
-      cancellation_date: sub.canceled_at
-        ? new Date(sub.canceled_at * 1000).toISOString()
-        : customer.cancellation_date,
       last_synced_at: new Date().toISOString(),
+      ...(shopifyOwned
+        ? {}
+        : {
+            billing_channel: 'stripe',
+            client_status: clientStatus,
+            calculated_mrr: calculatedMrr,
+            cancellation_date: sub.canceled_at
+              ? new Date(sub.canceled_at * 1000).toISOString()
+              : customer.cancellation_date,
+          }),
     })
     .eq('id', customer.id)
 }
@@ -280,9 +290,13 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
       .from('crm_customers')
       .update({
         calculated_total_revenue: total,
-        client_status: clientStatus,
-        billing_channel: 'stripe',
         last_synced_at: new Date().toISOString(),
+        ...(customer?.billing_channel === 'shopify'
+          ? {}
+          : {
+              client_status: clientStatus,
+              billing_channel: 'stripe',
+            }),
       })
       .eq('id', crmCustomerId)
   }
