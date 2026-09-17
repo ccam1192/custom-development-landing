@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { Upload, FileSpreadsheet, ArrowRight, ArrowLeft, Check, AlertTriangle, Loader2, X } from 'lucide-react'
+import { Upload, FileSpreadsheet, ArrowRight, ArrowLeft, Check, AlertTriangle, Loader2, X, Trash2 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import type { ClientStatus, BillingChannel, UserType, Source } from '../types'
 import * as XLSX from 'xlsx'
@@ -31,7 +31,7 @@ interface ColumnMapping {
   shopify_shop_id: string
 }
 
-const CRM_FIELDS: { key: keyof ColumnMapping; label: string; required?: boolean }[] = [
+const CRM_FIELDS: { key: keyof ColumnMapping; label: string }[] = [
   { key: 'name', label: 'Name' },
   { key: 'email', label: 'Email' },
   { key: 'store_url', label: 'Store URL' },
@@ -136,6 +136,8 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
     imported: number; matched: number; created: number; skipped: number; errors: string[]
   } | null>(null)
   const [importProgress, setImportProgress] = useState(0)
+  const [resetConfirm, setResetConfirm] = useState(false)
+  const [resetting, setResetting] = useState(false)
 
   function handleFile(file: File) {
     setFileName(file.name)
@@ -166,6 +168,25 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
     if (file) handleFile(file)
   }, [])
 
+  async function resetAllCrmData() {
+    setResetting(true)
+    try {
+      // Delete in correct order for foreign key constraints
+      await supabase.from('crm_revenue_transactions').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+      await supabase.from('crm_sync_logs').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+      await supabase.from('crm_customers').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+      // Reset sync state
+      await supabase.from('crm_sync_state').update({ status: 'idle', last_sync_at: null, last_successful_at: null, error_message: null }).neq('provider', '')
+      alert('All CRM data has been cleared. You can now re-import.')
+      onComplete()
+    } catch (e) {
+      alert(`Reset failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setResetting(false)
+      setResetConfirm(false)
+    }
+  }
+
   async function runImport() {
     setStep('importing')
     const result = { imported: 0, matched: 0, created: 0, skipped: 0, errors: [] as string[] }
@@ -190,6 +211,9 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
       if (c.shopify_shop_id) byShopify.set(c.shopify_shop_id, c.id)
     }
 
+    // Track emails seen in THIS import to prevent intra-spreadsheet duplicates
+    const seenEmails = new Set<string>()
+
     setImportProgress(5)
 
     // Phase 2: Build all records, separate into creates vs updates
@@ -200,6 +224,7 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
       const row = rows[i]
       try {
         const email = mapping.email ? str(row[mapping.email]) : ''
+        const emailLower = email.toLowerCase()
         const name = mapping.name ? str(row[mapping.name]) : ''
         const boardroomId = mapping.boardroom_user_id ? str(row[mapping.boardroom_user_id]) : ''
         const stripeId = mapping.stripe_customer_id ? str(row[mapping.stripe_customer_id]) : ''
@@ -210,12 +235,19 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
           continue
         }
 
-        // Fast in-memory lookup
+        // Check for duplicate within this same spreadsheet
+        if (emailLower && seenEmails.has(emailLower)) {
+          result.skipped++
+          continue
+        }
+        if (emailLower) seenEmails.add(emailLower)
+
+        // Fast in-memory lookup against DB records
         const existingId =
           (boardroomId && byBoardroom.get(boardroomId)) ||
           (stripeId && byStripe.get(stripeId)) ||
           (shopifyId && byShopify.get(shopifyId)) ||
-          (email && byEmail.get(email.toLowerCase())) ||
+          (emailLower && byEmail.get(emailLower)) ||
           null
 
         const record: Record<string, unknown> = {}
@@ -254,12 +286,17 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
 
         if (existingId) {
           const mergeFields: Record<string, unknown> = {}
+          if (record.store_url) mergeFields.store_url = record.store_url
           if (record.notes) mergeFields.notes = record.notes
           if (record.client_status) mergeFields.client_status = record.client_status
           if (record.cancellation_date) mergeFields.cancellation_date = record.cancellation_date
           if (record.source) mergeFields.source = record.source
           if (record.mrr_override) mergeFields.mrr_override = record.mrr_override
           if (record.total_revenue_override) mergeFields.total_revenue_override = record.total_revenue_override
+          if (record.billing_channel) mergeFields.billing_channel = record.billing_channel
+          if (record.user_type) mergeFields.user_type = record.user_type
+          if (record.signup_date) mergeFields.signup_date = record.signup_date
+          if (record.name) mergeFields.name = record.name
           mergeFields.updated_by = 'spreadsheet_import'
           toUpdate.push({ id: existingId, fields: mergeFields })
           result.matched++
@@ -284,11 +321,10 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
       } else {
         result.created += batch.length
       }
-      setImportProgress(20 + Math.round(((i + batch.length) / (toCreate.length + toUpdate.length)) * 70))
+      setImportProgress(20 + Math.round(((i + batch.length) / (toCreate.length + toUpdate.length || 1)) * 70))
     }
 
-    // Phase 4: Batch update existing records (individual updates needed for different IDs)
-    // Process in parallel batches of 20
+    // Phase 4: Batch update existing records (parallel batches of 20)
     for (let i = 0; i < toUpdate.length; i += 20) {
       const batch = toUpdate.slice(i, i + 20)
       await Promise.all(
@@ -299,7 +335,7 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
             })
         )
       )
-      setImportProgress(20 + Math.round(((toCreate.length + i + batch.length) / (toCreate.length + toUpdate.length)) * 70))
+      setImportProgress(20 + Math.round(((toCreate.length + i + batch.length) / (toCreate.length + toUpdate.length || 1)) * 70))
     }
 
     // Log the import
@@ -352,24 +388,59 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
           {step === 'upload' && (
-            <div
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={handleDrop}
-              className="border-2 border-dashed border-gray-300 rounded-xl p-12 text-center hover:border-primary transition-colors"
-            >
-              <Upload size={40} className="mx-auto text-gray-400 mb-4" />
-              <p className="text-gray-600 mb-2">Drag & drop a CSV or XLSX file</p>
-              <p className="text-gray-400 text-sm mb-4">or</p>
-              <label className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium cursor-pointer hover:bg-primary-dark transition-colors">
-                <Upload size={16} />
-                Choose File
-                <input
-                  type="file"
-                  accept=".csv,.xlsx,.xls"
-                  onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
-                  className="hidden"
-                />
-              </label>
+            <div className="space-y-6">
+              <div
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={handleDrop}
+                className="border-2 border-dashed border-gray-300 rounded-xl p-12 text-center hover:border-primary transition-colors"
+              >
+                <Upload size={40} className="mx-auto text-gray-400 mb-4" />
+                <p className="text-gray-600 mb-2">Drag & drop a CSV or XLSX file</p>
+                <p className="text-gray-400 text-sm mb-4">or</p>
+                <label className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium cursor-pointer hover:bg-primary-dark transition-colors">
+                  <Upload size={16} />
+                  Choose File
+                  <input
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+
+              {/* Reset CRM data */}
+              <div className="border border-red-200 rounded-lg p-4 bg-red-50/50">
+                <p className="text-sm font-medium text-red-800 mb-1">Reset CRM Data</p>
+                <p className="text-xs text-red-600 mb-3">
+                  Delete ALL customers, revenue transactions, and sync logs. Use this to start fresh before re-importing.
+                </p>
+                {resetConfirm ? (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={resetAllCrmData}
+                      disabled={resetting}
+                      className="px-3 py-1.5 bg-red-600 text-white text-xs font-medium rounded-lg hover:bg-red-700 disabled:opacity-50 flex items-center gap-1"
+                    >
+                      {resetting ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                      {resetting ? 'Deleting…' : 'Yes, delete everything'}
+                    </button>
+                    <button
+                      onClick={() => setResetConfirm(false)}
+                      className="px-3 py-1.5 text-gray-600 text-xs hover:text-gray-800"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setResetConfirm(true)}
+                    className="px-3 py-1.5 border border-red-300 text-red-700 text-xs font-medium rounded-lg hover:bg-red-100"
+                  >
+                    Reset All Data…
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -464,7 +535,7 @@ export default function ImportWizard({ onClose, onComplete }: ImportWizardProps)
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3">
                   <p className="text-2xl font-bold text-gray-500">{importResult.skipped}</p>
-                  <p className="text-xs text-gray-500">Skipped</p>
+                  <p className="text-xs text-gray-500">Skipped (no email/name or duplicate)</p>
                 </div>
               </div>
               {importResult.errors.length > 0 && (
