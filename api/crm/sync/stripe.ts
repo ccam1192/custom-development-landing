@@ -65,13 +65,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // ── Phase 3: Build in-memory maps ──
 
-    // Subscription lookup: most recent per customer
+    const ACTIVE_STATUSES = new Set(['active', 'trialing', 'past_due'])
+
+    // Subscription lookup: prefer active/trialing over canceled; tie-break by created
     const subsByCustomer = new Map<string, (typeof subscriptions)[0]>()
     for (const sub of subscriptions) {
       const custId = typeof sub.customer === 'string' ? sub.customer : (sub.customer as { id: string }).id
       const existing = subsByCustomer.get(custId)
-      if (!existing || sub.created > existing.created) {
+      if (!existing) {
         subsByCustomer.set(custId, sub)
+      } else {
+        const existingActive = ACTIVE_STATUSES.has(existing.status)
+        const newActive = ACTIVE_STATUSES.has(sub.status)
+        if ((newActive && !existingActive) || (newActive === existingActive && sub.created > existing.created)) {
+          subsByCustomer.set(custId, sub)
+        }
       }
     }
 
@@ -133,33 +141,94 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     console.log(`[Stripe Sync] Upserted ${txnRows.length} transactions`)
 
-    // ── Phase 5: Process customers — batch creates and updates ──
+    // ── Phase 5: Consolidate duplicate Stripe customers by email ──
+    // Stripe often has multiple customer objects for the same person.
+    // Merge them: prefer the one with an active subscription, combine revenue.
+    interface MergedCustomer {
+      primaryId: string
+      allIds: string[]
+      email: string | null
+      name: string | null
+      totalRevenue: number
+      hasPayment: boolean
+      sub: (typeof subscriptions)[0] | undefined
+    }
+
+    const mergedByEmail = new Map<string, MergedCustomer>()
+    const noEmailCustomers: MergedCustomer[] = []
+
+    for (const cust of customers) {
+      const email = (cust as { email?: string | null }).email ?? null
+      const name = (cust as { name?: string | null }).name ?? null
+      const sub = subsByCustomer.get(cust.id)
+      const rev = revenueByCustomer.get(cust.id) ?? 0
+      const emailKey = email?.toLowerCase() ?? null
+
+      if (emailKey && mergedByEmail.has(emailKey)) {
+        const existing = mergedByEmail.get(emailKey)!
+        existing.allIds.push(cust.id)
+        existing.totalRevenue += rev
+        existing.hasPayment = existing.hasPayment || rev > 0
+        if (!existing.name && name) existing.name = name
+
+        // Prefer active subscription
+        if (sub) {
+          if (!existing.sub) {
+            existing.sub = sub
+            existing.primaryId = cust.id
+          } else {
+            const existingActive = ACTIVE_STATUSES.has(existing.sub.status)
+            const newActive = ACTIVE_STATUSES.has(sub.status)
+            if ((newActive && !existingActive) || (newActive === existingActive && sub.created > existing.sub.created)) {
+              existing.sub = sub
+              existing.primaryId = cust.id
+            }
+          }
+        }
+      } else {
+        const merged: MergedCustomer = {
+          primaryId: cust.id,
+          allIds: [cust.id],
+          email,
+          name,
+          totalRevenue: rev,
+          hasPayment: rev > 0,
+          sub,
+        }
+        if (emailKey) {
+          mergedByEmail.set(emailKey, merged)
+        } else {
+          noEmailCustomers.push(merged)
+        }
+      }
+    }
+
+    const allMerged = [...mergedByEmail.values(), ...noEmailCustomers]
+    console.log(`[Stripe Sync] Consolidated ${customers.length} Stripe customers → ${allMerged.length} unique`)
+
+    // ── Phase 6: Process merged customers — batch creates and updates ──
     console.log('[Stripe Sync] Processing customers...')
     const toCreate: Array<Record<string, unknown>> = []
     const toUpdate: Array<{ id: string; record: Record<string, unknown> }> = []
 
-    for (const cust of customers) {
+    for (const merged of allMerged) {
       processed++
       try {
-        const sub = subsByCustomer.get(cust.id)
-        const email = (cust as { email?: string | null }).email ?? null
-        const name = (cust as { name?: string | null }).name ?? null
-        const totalStripeRevenue = revenueByCustomer.get(cust.id) ?? 0
-        const hasPayment = totalStripeRevenue > 0
+        const sub = merged.sub
         const planAmount = sub?.items?.data?.[0]?.price?.unit_amount ?? null
 
         const clientStatus = determineClientStatus({
           stripeSubscriptionStatus: sub?.status ?? null,
           stripeTrialEnd: sub?.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null,
           stripeCanceledAt: sub?.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
-          hasSuccessfulPayment: hasPayment,
+          hasSuccessfulPayment: merged.hasPayment,
           hasShopifyRevenue: false,
         })
 
         const calculatedMrr = calculateMrr({ clientStatus, stripePlanAmount: planAmount })
 
         const record: Record<string, unknown> = {
-          stripe_customer_id: cust.id,
+          stripe_customer_id: merged.primaryId,
           stripe_subscription_id: sub?.id ?? null,
           stripe_subscription_status: sub?.status ?? null,
           stripe_trial_end: sub?.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null,
@@ -171,34 +240,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           stripe_canceled_at: sub?.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
           client_status: clientStatus,
           calculated_mrr: calculatedMrr,
-          calculated_total_revenue: totalStripeRevenue,
+          calculated_total_revenue: merged.totalRevenue,
           cancellation_date: sub?.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
           last_synced_at: new Date().toISOString(),
         }
 
         // Find existing CRM customer (in-memory lookup, zero DB queries)
-        const existingId =
-          crmByStripeId.get(cust.id) ??
-          (email ? crmByEmail.get(email.toLowerCase()) : undefined) ??
-          null
+        let existingId: string | null = null
+        for (const sid of merged.allIds) {
+          existingId = crmByStripeId.get(sid) ?? null
+          if (existingId) break
+        }
+        if (!existingId && merged.email) {
+          existingId = crmByEmail.get(merged.email.toLowerCase()) ?? null
+        }
 
         if (existingId) {
           toUpdate.push({ id: existingId, record })
           updated++
         } else {
-          record.name = name
-          record.email = email
+          record.name = merged.name
+          record.email = merged.email
           record.billing_channel = 'stripe'
           record.source = 'stripe'
-          record.signup_date = new Date((cust as { created: number }).created * 1000).toISOString()
           toCreate.push(record)
           created++
+
+          // Track email so subsequent no-email Stripe customers don't dupe
+          if (merged.email) crmByEmail.set(merged.email.toLowerCase(), 'pending')
         }
       } catch (e) {
         errors++
         errorDetails.push({
           message: e instanceof Error ? e.message : String(e),
-          record: (cust as { email?: string }).email ?? cust.id,
+          record: merged.email ?? merged.primaryId,
         })
       }
     }

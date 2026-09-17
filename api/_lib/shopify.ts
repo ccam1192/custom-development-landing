@@ -14,7 +14,7 @@ const ORG_ID = process.env.SHOPIFY_PARTNER_ORG_ID ?? ''
 const ACCESS_TOKEN = process.env.SHOPIFY_PARTNER_ACCESS_TOKEN ?? ''
 const APP_ID = process.env.SHOPIFY_APP_ID ?? ''
 
-const PARTNER_API_URL = `https://partners.shopify.com/${ORG_ID}/api/2024-07/graphql.json`
+const PARTNER_API_URL = `https://partners.shopify.com/${ORG_ID}/api/2026-01/graphql.json`
 
 export function isShopifyConfigured(): boolean {
   return !!ORG_ID && !!ACCESS_TOKEN && !!APP_ID

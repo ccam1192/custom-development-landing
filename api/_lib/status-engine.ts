@@ -31,50 +31,43 @@ export function determineClientStatus(input: StatusInput): ClientStatus {
     return 'agency_client'
   }
 
-  // Check for cancellation
-  const isCanceled =
-    input.stripeSubscriptionStatus === 'canceled' ||
-    input.boardroomSubscriptionStatus === 'canceled' ||
-    !!input.stripeCanceledAt
+  const subStatus = input.stripeSubscriptionStatus ?? input.boardroomSubscriptionStatus ?? null
+  const isSubActive = subStatus === 'active' || subStatus === 'past_due'
+  const isSubTrialing = subStatus === 'trialing' || input.boardroomSubscriptionStatus === 'trial'
 
-  if (isCanceled) {
-    return 'canceled'
-  }
-
-  // Active customer: has actually paid
-  if (input.hasSuccessfulPayment || input.hasShopifyRevenue) {
+  // Active subscription + paid → Active Customer
+  if (isSubActive && (input.hasSuccessfulPayment || input.hasShopifyRevenue)) {
     return 'active_customer'
   }
 
-  // In trial: subscription exists with trialing status
-  const isTrial =
-    input.stripeSubscriptionStatus === 'trialing' ||
-    input.boardroomSubscriptionStatus === 'trialing' ||
-    input.boardroomSubscriptionStatus === 'trial'
+  // Active subscription but no payment yet → In Trial (free period / grace)
+  if (isSubActive && !input.hasSuccessfulPayment && !input.hasShopifyRevenue) {
+    return 'in_trial'
+  }
 
-  if (isTrial) {
-    // Check if trial hasn't ended
+  // Trialing subscription
+  if (isSubTrialing) {
     if (input.stripeTrialEnd) {
       const trialEnd = new Date(input.stripeTrialEnd)
-      if (trialEnd > new Date()) {
-        return 'in_trial'
-      }
+      if (trialEnd > new Date()) return 'in_trial'
     } else {
       return 'in_trial'
     }
   }
 
-  // Has an active subscription but hasn't paid yet (possible free period)
-  if (
-    input.stripeSubscriptionStatus === 'active' ||
-    input.boardroomSubscriptionStatus === 'active'
-  ) {
-    // If they have an active sub but zero payments, they could be in trial
-    // or just started. If billing channel exists, they're at least in trial
-    if (!input.hasSuccessfulPayment && !input.hasShopifyRevenue) {
-      return 'in_trial'
-    }
+  // Has paid but subscription is canceled or missing → was a paying customer, now canceled
+  if (input.hasSuccessfulPayment || input.hasShopifyRevenue) {
+    const isCanceled =
+      subStatus === 'canceled' ||
+      !!input.stripeCanceledAt
+    if (isCanceled) return 'canceled'
+    // Paid but no current subscription (e.g. one-off invoices) → active
     return 'active_customer'
+  }
+
+  // Subscription is explicitly canceled, never paid → canceled
+  if (subStatus === 'canceled' || !!input.stripeCanceledAt) {
+    return 'canceled'
   }
 
   // Default: prospect
