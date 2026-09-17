@@ -50,6 +50,21 @@ interface TransactionsPage {
   cursor: string | null
 }
 
+const PAGE_SIZE = 100
+const PAGE_DELAY_MS = 350 // Partner API: 4 requests/second
+const MAX_RETRIES = 8
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isRateLimit(status: number, errors?: Array<{ message?: string; extensions?: { code?: string } }>): boolean {
+  if (status === 429) return true
+  return (errors ?? []).some(
+    (e) => e.extensions?.code === '429' || /too many requests/i.test(e.message ?? '')
+  )
+}
+
 async function partnerQuery<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
   if (!isShopifyConfigured()) {
     throw new Error(
@@ -57,27 +72,58 @@ async function partnerQuery<T>(query: string, variables?: Record<string, unknown
     )
   }
 
-  const res = await fetch(PARTNER_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': ACCESS_TOKEN,
-    },
-    body: JSON.stringify({ query, variables }),
-  })
+  let lastError = 'Shopify Partner API request failed'
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`Shopify Partner API error ${res.status}: ${body}`)
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const res = await fetch(PARTNER_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': ACCESS_TOKEN,
+      },
+      body: JSON.stringify({ query, variables }),
+    })
+
+    const retryAfterHeader = res.headers.get('retry-after')
+    const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : NaN
+    const backoffMs = Number.isFinite(retryAfterMs) && retryAfterMs > 0
+      ? retryAfterMs
+      : Math.min(30_000, 1000 * 2 ** attempt)
+
+    if (res.status === 429) {
+      lastError = `Shopify Partner API error 429 (attempt ${attempt + 1}/${MAX_RETRIES + 1})`
+      console.warn(`[Shopify] Rate limited. Waiting ${backoffMs}ms before retry`)
+      await sleep(backoffMs)
+      continue
+    }
+
+    const json = await res.json().catch(() => null)
+
+    if (!res.ok) {
+      const body = typeof json === 'object' ? JSON.stringify(json) : await res.text().catch(() => '')
+      lastError = `Shopify Partner API error ${res.status}: ${body}`
+      if (attempt < MAX_RETRIES && res.status >= 500) {
+        await sleep(backoffMs)
+        continue
+      }
+      throw new Error(lastError)
+    }
+
+    if (json?.errors?.length) {
+      if (isRateLimit(res.status, json.errors) && attempt < MAX_RETRIES) {
+        lastError = `Shopify Partner API: ${json.errors[0].message}`
+        console.warn(`[Shopify] Rate limited in GraphQL errors. Waiting ${backoffMs}ms before retry`)
+        await sleep(backoffMs)
+        continue
+      }
+      const messages = json.errors.map((e: { message: string }) => e.message).join('; ')
+      throw new Error(`Shopify Partner API: ${messages}`)
+    }
+
+    return json.data as T
   }
 
-  const json = await res.json()
-  if (json.errors?.length) {
-    const messages = json.errors.map((e: { message: string }) => e.message).join('; ')
-    throw new Error(`Shopify Partner API: ${messages}`)
-  }
-
-  return json.data
+  throw new Error(lastError)
 }
 
 /** Fields shared by all App*Sale types in 2026-01 */
@@ -104,7 +150,7 @@ export async function getAppTransactions(
   const query = `
     query AppTransactions($appId: ID!, $after: String, $types: [TransactionType!]${extraVar}) {
       transactions(
-        first: 100
+        first: ${PAGE_SIZE}
         after: $after
         appId: $appId
         types: $types
@@ -172,6 +218,7 @@ export async function getAllAppTransactions(
   const MAX_PAGES = 500
 
   while (hasNext) {
+    if (pages > 0) await sleep(PAGE_DELAY_MS)
     const page = await getAppTransactions(cursor, createdAtMin)
     all.push(...page.transactions)
     hasNext = page.hasNextPage && !!page.cursor
