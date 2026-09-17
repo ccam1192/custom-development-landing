@@ -1,24 +1,27 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { supabaseAdmin } from '../_lib/supabase-admin.js'
-import { constructWebhookEvent, isStripeConfigured } from '../_lib/stripe.js'
+import { constructWebhookEvent, isStripeConfigured, getStripe } from '../_lib/stripe.js'
 import { determineClientStatus, calculateMrr } from '../_lib/status-engine.js'
 import type Stripe from 'stripe'
 
 /**
  * Stripe Webhook Handler
  *
- * Handles:
- *   - customer.subscription.created
- *   - customer.subscription.updated
- *   - customer.subscription.deleted
- *   - invoice.paid / invoice.payment_succeeded
- *   - invoice.payment_failed
- *
- * All handlers are idempotent — safe to replay.
+ * Creates or updates CRM customers from live Stripe events.
+ * Idempotent — safe to replay.
  */
 
 export const config = {
   api: { bodyParser: false },
+}
+
+type CrmRow = {
+  id: string
+  user_type: string | null
+  boardroom_subscription_status: string | null
+  cancellation_date: string | null
+  email: string | null
+  name: string | null
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -35,7 +38,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   let event: Stripe.Event
   try {
-    // Read raw body
     const chunks: Buffer[] = []
     for await (const chunk of req) {
       chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
@@ -49,6 +51,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     switch (event.type) {
+      case 'customer.created':
+      case 'customer.updated': {
+        const obj = event.data.object as Stripe.Customer | Stripe.DeletedCustomer
+        if (!('deleted' in obj && obj.deleted)) {
+          await findOrCreateCrmCustomer(obj as Stripe.Customer)
+        }
+        break
+      }
+
       case 'customer.subscription.created':
       case 'customer.subscription.updated':
       case 'customer.subscription.deleted':
@@ -65,7 +76,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         break
 
       default:
-        // Acknowledge but ignore unhandled event types
         break
     }
 
@@ -76,24 +86,104 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
-async function findCrmCustomerByStripeId(stripeCustomerId: string) {
+async function findCrmByStripeId(stripeCustomerId: string): Promise<CrmRow | null> {
   const { data } = await supabaseAdmin
     .from('crm_customers')
-    .select('*')
+    .select('id, user_type, boardroom_subscription_status, cancellation_date, email, name')
     .eq('stripe_customer_id', stripeCustomerId)
     .limit(1)
-    .single()
+    .maybeSingle()
   return data
+}
+
+async function findCrmByEmail(email: string): Promise<CrmRow | null> {
+  const { data } = await supabaseAdmin
+    .from('crm_customers')
+    .select('id, user_type, boardroom_subscription_status, cancellation_date, email, name')
+    .ilike('email', email.trim())
+    .limit(1)
+    .maybeSingle()
+  return data
+}
+
+async function retrieveStripeCustomer(stripeCustomerId: string): Promise<Stripe.Customer | null> {
+  try {
+    const cust = await getStripe().customers.retrieve(stripeCustomerId)
+    if (cust.deleted) return null
+    return cust as Stripe.Customer
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Match an existing CRM row or insert a new one from Stripe customer data.
+ */
+async function findOrCreateCrmCustomer(
+  stripeCustomerIdOrObj: string | Stripe.Customer
+): Promise<CrmRow | null> {
+  const stripeId =
+    typeof stripeCustomerIdOrObj === 'string' ? stripeCustomerIdOrObj : stripeCustomerIdOrObj.id
+
+  const existing = await findCrmByStripeId(stripeId)
+  if (existing) return existing
+
+  const stripeCust =
+    typeof stripeCustomerIdOrObj === 'string'
+      ? await retrieveStripeCustomer(stripeCustomerIdOrObj)
+      : stripeCustomerIdOrObj
+
+  if (!stripeCust) return null
+
+  const email = stripeCust.email?.trim() || null
+  const name = stripeCust.name?.trim() || null
+
+  if (email) {
+    const byEmail = await findCrmByEmail(email)
+    if (byEmail) {
+      await supabaseAdmin
+        .from('crm_customers')
+        .update({
+          stripe_customer_id: stripeId,
+          billing_channel: 'stripe',
+          last_synced_at: new Date().toISOString(),
+          ...(name && !byEmail.name ? { name } : {}),
+        })
+        .eq('id', byEmail.id)
+      return { ...byEmail, name: byEmail.name ?? name }
+    }
+  }
+
+  if (!email && !name) return null
+
+  const { data: created, error } = await supabaseAdmin
+    .from('crm_customers')
+    .insert({
+      stripe_customer_id: stripeId,
+      email,
+      name,
+      billing_channel: 'stripe',
+      source: 'stripe',
+      client_status: 'prospect',
+      last_synced_at: new Date().toISOString(),
+    })
+    .select('id, user_type, boardroom_subscription_status, cancellation_date, email, name')
+    .single()
+
+  if (error) {
+    console.error('[Stripe webhook] create customer failed:', error.message)
+    return null
+  }
+  return created
 }
 
 async function handleSubscriptionEvent(sub: Stripe.Subscription) {
   const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id
-  const customer = await findCrmCustomerByStripeId(customerId)
-  if (!customer) return // No CRM record yet; will be created on next sync
+  const customer = await findOrCreateCrmCustomer(customerId)
+  if (!customer) return
 
   const planAmount = sub.items?.data?.[0]?.price?.unit_amount ?? null
 
-  // Check payment history
   const { count } = await supabaseAdmin
     .from('crm_revenue_transactions')
     .select('*', { count: 'exact', head: true })
@@ -122,6 +212,7 @@ async function handleSubscriptionEvent(sub: Stripe.Subscription) {
   await supabaseAdmin
     .from('crm_customers')
     .update({
+      stripe_customer_id: customerId,
       stripe_subscription_id: sub.id,
       stripe_subscription_status: sub.status,
       stripe_trial_end: sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null,
@@ -131,9 +222,12 @@ async function handleSubscriptionEvent(sub: Stripe.Subscription) {
       stripe_plan_amount: planAmount,
       stripe_cancel_at: sub.cancel_at ? new Date(sub.cancel_at * 1000).toISOString() : null,
       stripe_canceled_at: sub.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
+      billing_channel: 'stripe',
       client_status: clientStatus,
       calculated_mrr: calculatedMrr,
-      cancellation_date: sub.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : customer.cancellation_date,
+      cancellation_date: sub.canceled_at
+        ? new Date(sub.canceled_at * 1000).toISOString()
+        : customer.cancellation_date,
       last_synced_at: new Date().toISOString(),
     })
     .eq('id', customer.id)
@@ -142,36 +236,32 @@ async function handleSubscriptionEvent(sub: Stripe.Subscription) {
 async function handleInvoicePaid(invoice: Stripe.Invoice) {
   if (!invoice.id || !invoice.amount_paid || invoice.amount_paid <= 0) return
 
-  const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id
+  const customerId =
+    typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id ?? null
 
-  let crmCustomerId: string | null = null
-  if (customerId) {
-    const customer = await findCrmCustomerByStripeId(customerId)
-    crmCustomerId = customer?.id ?? null
-  }
+  const customer = customerId ? await findOrCreateCrmCustomer(customerId) : null
+  const crmCustomerId = customer?.id ?? null
 
-  // Idempotent upsert
-  await supabaseAdmin
-    .from('crm_revenue_transactions')
-    .upsert(
-      {
-        provider: 'stripe',
-        provider_transaction_id: invoice.id,
-        provider_customer_id: customerId ?? null,
-        provider_subscription_id:
-          typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription?.id ?? null,
-        crm_customer_id: crmCustomerId,
-        amount: invoice.amount_paid / 100,
-        currency: (invoice.currency ?? 'usd').toUpperCase(),
-        transaction_date: new Date(invoice.created * 1000).toISOString(),
-        status: 'succeeded',
-        transaction_type: 'payment',
-        description: `Invoice ${invoice.number ?? invoice.id}`,
-      },
-      { onConflict: 'provider,provider_transaction_id' }
-    )
+  await supabaseAdmin.from('crm_revenue_transactions').upsert(
+    {
+      provider: 'stripe',
+      provider_transaction_id: invoice.id,
+      provider_customer_id: customerId,
+      provider_subscription_id:
+        typeof invoice.subscription === 'string'
+          ? invoice.subscription
+          : (invoice.subscription as { id: string } | null)?.id ?? null,
+      crm_customer_id: crmCustomerId,
+      amount: invoice.amount_paid / 100,
+      currency: (invoice.currency ?? 'usd').toUpperCase(),
+      transaction_date: new Date((invoice as { created: number }).created * 1000).toISOString(),
+      status: 'succeeded',
+      transaction_type: 'payment',
+      description: `Invoice ${(invoice as { number?: string }).number ?? invoice.id}`,
+    },
+    { onConflict: 'provider,provider_transaction_id' }
+  )
 
-  // Recalculate customer total revenue
   if (crmCustomerId) {
     const { data: txns } = await supabaseAdmin
       .from('crm_revenue_transactions')
@@ -180,10 +270,20 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
       .eq('status', 'succeeded')
 
     const total = (txns ?? []).reduce((sum, t) => sum + t.amount, 0)
+    const clientStatus = determineClientStatus({
+      userType: customer?.user_type,
+      hasSuccessfulPayment: total > 0,
+      hasShopifyRevenue: false,
+    })
 
     await supabaseAdmin
       .from('crm_customers')
-      .update({ calculated_total_revenue: total })
+      .update({
+        calculated_total_revenue: total,
+        client_status: clientStatus,
+        billing_channel: 'stripe',
+        last_synced_at: new Date().toISOString(),
+      })
       .eq('id', crmCustomerId)
   }
 }
@@ -191,29 +291,24 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
 async function handleInvoiceFailed(invoice: Stripe.Invoice) {
   if (!invoice.id) return
 
-  const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id
+  const customerId =
+    typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id ?? null
 
-  let crmCustomerId: string | null = null
-  if (customerId) {
-    const customer = await findCrmCustomerByStripeId(customerId)
-    crmCustomerId = customer?.id ?? null
-  }
+  const customer = customerId ? await findOrCreateCrmCustomer(customerId) : null
 
-  await supabaseAdmin
-    .from('crm_revenue_transactions')
-    .upsert(
-      {
-        provider: 'stripe',
-        provider_transaction_id: invoice.id,
-        provider_customer_id: customerId ?? null,
-        crm_customer_id: crmCustomerId,
-        amount: (invoice.amount_due ?? 0) / 100,
-        currency: (invoice.currency ?? 'usd').toUpperCase(),
-        transaction_date: new Date(invoice.created * 1000).toISOString(),
-        status: 'failed',
-        transaction_type: 'payment',
-        description: `Failed: Invoice ${invoice.number ?? invoice.id}`,
-      },
-      { onConflict: 'provider,provider_transaction_id' }
-    )
+  await supabaseAdmin.from('crm_revenue_transactions').upsert(
+    {
+      provider: 'stripe',
+      provider_transaction_id: invoice.id,
+      provider_customer_id: customerId,
+      crm_customer_id: customer?.id ?? null,
+      amount: ((invoice as { amount_due?: number }).amount_due ?? 0) / 100,
+      currency: (invoice.currency ?? 'usd').toUpperCase(),
+      transaction_date: new Date((invoice as { created: number }).created * 1000).toISOString(),
+      status: 'failed',
+      transaction_type: 'payment',
+      description: `Failed: Invoice ${(invoice as { number?: string }).number ?? invoice.id}`,
+    },
+    { onConflict: 'provider,provider_transaction_id' }
+  )
 }

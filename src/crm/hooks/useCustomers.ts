@@ -111,33 +111,19 @@ export function useCustomers(): UseCustomersReturn {
       let mrr = 0
       let revenue = 0
       let fromIdx = 0
-      let useGenerated = true
 
       for (;;) {
-        const columns = useGenerated
-          ? 'mrr_override, calculated_mrr, total_revenue_override, calculated_total_revenue, effective_mrr, effective_total_revenue'
-          : 'mrr_override, calculated_mrr, total_revenue_override, calculated_total_revenue'
-        let totQuery = supabase.from('crm_customers').select(columns)
+        let totQuery = supabase
+          .from('crm_customers')
+          .select('mrr_override, calculated_mrr, total_revenue_override, calculated_total_revenue')
         totQuery = applyCustomerFilters(totQuery, filters)
         const { data: totRows, error: totErr } = await totQuery.range(fromIdx, fromIdx + PAGE - 1)
         if (fetchId !== fetchIdRef.current) return
-
-        if (totErr && useGenerated) {
-          useGenerated = false
-          continue
-        }
         if (totErr) break
 
         for (const c of totRows ?? []) {
-          mrr += Number(
-            (useGenerated ? c.effective_mrr : null) ?? c.mrr_override ?? c.calculated_mrr ?? 0
-          )
-          revenue += Number(
-            (useGenerated ? c.effective_total_revenue : null) ??
-              c.total_revenue_override ??
-              c.calculated_total_revenue ??
-              0
-          )
+          mrr += Number(c.mrr_override ?? c.calculated_mrr ?? 0)
+          revenue += Number(c.total_revenue_override ?? c.calculated_total_revenue ?? 0)
         }
         if (!totRows || totRows.length < PAGE) break
         fromIdx += PAGE
