@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Trash2, Download, Edit, X } from 'lucide-react'
+import { Trash2, Download, X } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import type { CrmCustomer } from '../types'
 
