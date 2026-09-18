@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { LogOut, FileSpreadsheet, Activity, AlertTriangle, FilterX } from 'lucide-react'
+import { LogOut, FileSpreadsheet, Activity, AlertTriangle, FilterX, Search } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useCustomers } from '../hooks/useCustomers'
 import { useKpis } from '../hooks/useKpis'
@@ -26,6 +26,7 @@ export default function CrmDashboardPage() {
     error,
     pagination,
     filters,
+    search,
     sortField,
     sortDirection,
     selectedIds,
@@ -33,6 +34,7 @@ export default function CrmDashboardPage() {
     columnOrder,
     columnWidths,
     setColumnFilter,
+    setSearch,
     clearFilters,
     setSort,
     setPage,
@@ -143,6 +145,17 @@ export default function CrmDashboardPage() {
           {/* Filters + actions row */}
           <div className="space-y-3">
             <div className="flex items-center gap-2 flex-wrap">
+              <div className="relative">
+                <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search name, email, or URL"
+                  className="w-64 max-w-full pl-8 pr-3 py-1.5 rounded-lg border border-gray-300 text-sm text-gray-800 placeholder:text-gray-400 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 bg-white"
+                  aria-label="Search name, email, or URL"
+                />
+              </div>
               <SavedViewsMenu
                 views={views}
                 activeViewId={activeViewId}
@@ -157,9 +170,9 @@ export default function CrmDashboardPage() {
               <button
                 type="button"
                 onClick={clearFilters}
-                disabled={!hasActiveFilters(filters)}
+                disabled={!hasActiveFilters(filters, search)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 text-sm text-gray-700 hover:border-primary hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed bg-white"
-                title="Clear all column filters"
+                title="Clear search and column filters"
               >
                 <FilterX size={14} />
                 Clear Filters
@@ -171,7 +184,7 @@ export default function CrmDashboardPage() {
                 onRefresh={handleRefresh}
               />
               <div className="flex-1" />
-              <ExportButton filters={filters} mode="filtered" />
+              <ExportButton filters={filters} search={search} mode="filtered" />
               <ExportButton filters={filters} mode="all" />
             </div>
           </div>

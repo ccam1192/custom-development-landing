@@ -7,6 +7,7 @@ export interface GridPrefs {
   sortField: SortField
   sortDirection: SortDirection
   filters: CustomerFilters
+  search: string
 }
 
 export interface SavedGridView {
@@ -30,6 +31,7 @@ export const DEFAULT_GRID_PREFS: GridPrefs = {
   sortField: 'created_at',
   sortDirection: 'desc',
   filters: {},
+  search: '',
 }
 
 export const DEFAULT_WORKSPACE: GridWorkspace = {
@@ -77,6 +79,7 @@ export function sanitizePrefs(parsed: Partial<GridPrefs> | undefined): GridPrefs
     sortField: typeof parsed?.sortField === 'string' ? (parsed.sortField as SortField) : DEFAULT_GRID_PREFS.sortField,
     sortDirection: parsed?.sortDirection === 'asc' || parsed?.sortDirection === 'desc' ? parsed.sortDirection : 'desc',
     filters: parsed?.filters && typeof parsed.filters === 'object' ? parsed.filters : {},
+    search: typeof parsed?.search === 'string' ? parsed.search : '',
   }
 }
 

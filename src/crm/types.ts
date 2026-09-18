@@ -281,7 +281,8 @@ export function isColumnFilterActive(filter: ColumnFilter | undefined): boolean 
   return filter.value != null && filter.value !== ''
 }
 
-export function hasActiveFilters(f: CustomerFilters): boolean {
+export function hasActiveFilters(f: CustomerFilters, search = ''): boolean {
+  if (search.trim().length > 0) return true
   return (Object.keys(f) as GridColumnId[]).some((key) => isColumnFilterActive(f[key]))
 }
 

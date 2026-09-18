@@ -35,6 +35,7 @@ interface UseCustomersReturn {
   error: string | null
   pagination: PaginationState
   filters: CustomerFilters
+  search: string
   sortField: SortField
   sortDirection: SortDirection
   selectedIds: Set<string>
@@ -43,6 +44,7 @@ interface UseCustomersReturn {
   columnWidths: Partial<Record<GridColumnId, number>>
   setFilters: (f: CustomerFilters) => void
   setColumnFilter: (id: GridColumnId, filter: ColumnFilter | undefined) => void
+  setSearch: (value: string) => void
   clearFilters: () => void
   setSort: (field: SortField, dir?: SortDirection) => void
   setPage: (page: number) => void
@@ -73,6 +75,8 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [filters, setFiltersState] = useState<CustomerFilters>(initial.current.prefs.filters)
+  const [search, setSearchState] = useState(initial.current.prefs.search ?? '')
+  const [searchApplied, setSearchApplied] = useState((initial.current.prefs.search ?? '').trim())
   const [sortField, setSortField] = useState<SortField>(initial.current.prefs.sortField)
   const [sortDirection, setSortDirection] = useState<SortDirection>(initial.current.prefs.sortDirection)
   const [columnOrder, setColumnOrderState] = useState<GridColumnId[]>(initial.current.prefs.order)
@@ -96,6 +100,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
     sortField,
     sortDirection,
     filters,
+    search,
   })
 
   const activeSaved = views.find((v) => v.id === activeViewId)
@@ -111,7 +116,20 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
     })
     // currentPrefs is derived each render; persist the snapshot we just built
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uid, columnOrder, columnWidths, sortField, sortDirection, filters, views, defaultViewId, activeViewId])
+  }, [uid, columnOrder, columnWidths, sortField, sortDirection, filters, search, views, defaultViewId, activeViewId])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const next = search.trim()
+      setSearchApplied((prev) => (prev === next ? prev : next))
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [search])
+
+  useEffect(() => {
+    setPagination((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }))
+    setSelectedIds(new Set())
+  }, [searchApplied])
 
   const fetchCustomers = useCallback(async () => {
     const fetchId = ++fetchIdRef.current
@@ -120,7 +138,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
 
     try {
       let query = supabase.from('crm_customers').select('*', { count: 'exact' })
-      query = applyCustomerFilters(query, filters)
+      query = applyCustomerFilters(query, filters, searchApplied)
       query = query.order(sortField, { ascending: sortDirection === 'asc', nullsFirst: false })
 
       const from = (pagination.page - 1) * pagination.pageSize
@@ -145,7 +163,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
         let totQuery = supabase
           .from('crm_customers')
           .select('mrr_override, calculated_mrr, total_revenue_override, calculated_total_revenue')
-        totQuery = applyCustomerFilters(totQuery, filters)
+        totQuery = applyCustomerFilters(totQuery, filters, searchApplied)
         const { data: totRows, error: totErr } = await totQuery.range(fromIdx, fromIdx + PAGE - 1)
         if (fetchId !== fetchIdRef.current) return
         if (totErr) break
@@ -157,7 +175,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
         fromIdx += PAGE
       }
       if (fetchId !== fetchIdRef.current) return
-      setFilteredTotals({ mrr, revenue, filtered: hasActiveFilters(filters) })
+      setFilteredTotals({ mrr, revenue, filtered: hasActiveFilters(filters, searchApplied) })
     } catch (e) {
       if (fetchId === fetchIdRef.current) {
         setError(e instanceof Error ? e.message : 'Failed to fetch customers')
@@ -168,7 +186,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
         hasLoadedRef.current = true
       }
     }
-  }, [filters, sortField, sortDirection, pagination.page, pagination.pageSize])
+  }, [filters, searchApplied, sortField, sortDirection, pagination.page, pagination.pageSize])
 
   useEffect(() => {
     fetchCustomers()
@@ -208,8 +226,14 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
     setSelectedIds(new Set())
   }, [])
 
+  const setSearch = useCallback((value: string) => {
+    setSearchState(value)
+  }, [])
+
   const clearFilters = useCallback(() => {
     applyFilters(DEFAULT_FILTERS)
+    setSearchState('')
+    setSearchApplied('')
   }, [applyFilters])
 
   const setPage = useCallback((page: number) => {
@@ -254,6 +278,8 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
   const applyLayout = useCallback((prefs: GridPrefs) => {
     const next = sanitizePrefs(prefs)
     setFiltersState(next.filters)
+    setSearchState(next.search)
+    setSearchApplied(next.search.trim())
     setSortField(next.sortField)
     setSortDirection(next.sortDirection)
     setColumnOrderState(next.order)
@@ -315,6 +341,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
     error,
     pagination,
     filters,
+    search,
     sortField,
     sortDirection,
     selectedIds,
@@ -323,6 +350,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
     columnWidths,
     setFilters: applyFilters,
     setColumnFilter,
+    setSearch,
     clearFilters,
     setSort,
     setPage,

@@ -7,10 +7,11 @@ import * as XLSX from 'xlsx'
 
 interface ExportButtonProps {
   filters: CustomerFilters
+  search?: string
   mode: 'filtered' | 'all'
 }
 
-export default function ExportButton({ filters, mode }: ExportButtonProps) {
+export default function ExportButton({ filters, search, mode }: ExportButtonProps) {
   const [exporting, setExporting] = useState(false)
 
   async function handleExport(format: 'csv' | 'xlsx') {
@@ -20,7 +21,7 @@ export default function ExportButton({ filters, mode }: ExportButtonProps) {
       let query = supabase.from('crm_customers').select('*')
 
       if (mode === 'filtered') {
-        query = applyCustomerFilters(query, filters)
+        query = applyCustomerFilters(query, filters, search)
       }
 
       query = query.order('name')

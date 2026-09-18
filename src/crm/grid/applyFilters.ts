@@ -90,7 +90,18 @@ function applyNumber(query: any, column: string, filter: Extract<ColumnFilter, {
   }
 }
 
-export function applyCustomerFilters(query: any, filters: CustomerFilters) {
+export function applyKeywordSearch(query: any, search: string | undefined) {
+  const term = search?.trim()
+  if (!term) return query
+  const escaped = escapeIlike(term).replace(/,/g, ' ').replace(/"/g, '')
+  const pattern = `"%${escaped}%"`
+  return query.or(
+    `name.ilike.${pattern},email.ilike.${pattern},store_url.ilike.${pattern},shopify_shop_domain.ilike.${pattern}`
+  )
+}
+
+export function applyCustomerFilters(query: any, filters: CustomerFilters, search?: string) {
+  query = applyKeywordSearch(query, search)
   for (const key of Object.keys(filters) as GridColumnId[]) {
     const filter = filters[key]
     if (!isColumnFilterActive(filter) || !filter) continue
