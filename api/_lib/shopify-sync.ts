@@ -555,14 +555,15 @@ async function runEventsPhase(
         cursor.stats.skippedMissingIds++
         continue
       }
-      addAffectedShop(cursor, shop)
       try {
         const isSubscriptionEvent = event.eventType.startsWith('SUBSCRIPTION_')
         if (!isSubscriptionEvent) {
           const existing = index.find(shop.shopId, null, shop.domain)
+          if (existing) addAffectedShop(cursor, shop)
           rows.push(toSubscriptionEventRow(event, existing?.id ?? null))
           continue
         }
+        addAffectedShop(cursor, shop)
         const result = await findOrCreateShopifyCustomer(index, shop, null)
         if (result.skippedMissing) {
           cursor.stats.skippedMissingIds++
@@ -719,9 +720,13 @@ async function runLifecyclePhase(
 
     const events = shop.shopId ? await loadEventsForShop(shop.shopId) : []
     const derived = deriveShopifyLifecycle({ activeSub, events })
+    const hasSubscriptionEvidence =
+      !!activeSub || events.some((event) => String(event.eventType).startsWith('SUBSCRIPTION_'))
 
     try {
-      const result = await findOrCreateShopifyCustomer(index, shop, derived.subscriptionId)
+      const result = await findOrCreateShopifyCustomer(index, shop, derived.subscriptionId, {
+        createIfMissing: cursor.mode !== 'delta' || hasSubscriptionEvidence,
+      })
       if (result.skippedMissing || !result.customer) {
         cursor.stats.skippedMissingIds++
       } else {

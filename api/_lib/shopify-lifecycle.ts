@@ -453,7 +453,8 @@ async function lookupExistingShopifyCustomer(shop: ShopifyShopRef): Promise<CrmS
 export async function findOrCreateShopifyCustomer(
   index: ShopifyCustomerIndex,
   shop: ShopifyShopRef,
-  subscriptionId: string | null
+  subscriptionId: string | null,
+  options?: { createIfMissing?: boolean }
 ): Promise<{ customer: CrmShopifyCustomer | null; created: boolean; skippedStripe: boolean; skippedMissing: boolean }> {
   if (!shop.shopId && !shop.domain && !subscriptionId) {
     return {
@@ -522,6 +523,13 @@ export async function findOrCreateShopifyCustomer(
       skippedStripe: isStripeAuthoritative(existing.billing_channel),
       skippedMissing: false,
     }
+  }
+
+  if (options?.createIfMissing === false) {
+    console.log(
+      `[Shopify Sync] Skipping CRM create for install-only shop ${shop.domain ?? shop.shopId}`
+    )
+    return { customer: null, created: false, skippedStripe: false, skippedMissing: true }
   }
 
   const insertHost = normalizeShopDomain(shop.domain)
