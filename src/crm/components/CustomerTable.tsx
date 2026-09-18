@@ -233,8 +233,8 @@ export default function CustomerTable({
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <div className="overflow-x-auto max-h-[calc(100vh-320px)] crm-scrollbar">
+    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden flex flex-col">
+      <div className="overflow-auto min-h-[28rem] h-[calc(100vh-360px)] crm-scrollbar">
         <table className="text-sm table-fixed" style={{ width: tableWidth, minWidth: tableWidth }}>
           <colgroup>
             <col style={{ width: CHECKBOX_COL_WIDTH }} />

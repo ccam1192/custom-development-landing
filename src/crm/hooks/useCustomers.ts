@@ -88,6 +88,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [filteredTotals, setFilteredTotals] = useState<FilteredTotals>({ mrr: 0, revenue: 0, filtered: false })
   const fetchIdRef = useRef(0)
+  const hasLoadedRef = useRef(false)
 
   const currentPrefs = (): GridPrefs => ({
     order: columnOrder,
@@ -114,7 +115,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
 
   const fetchCustomers = useCallback(async () => {
     const fetchId = ++fetchIdRef.current
-    setLoading(true)
+    if (!hasLoadedRef.current) setLoading(true)
     setError(null)
 
     try {
@@ -162,7 +163,10 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
         setError(e instanceof Error ? e.message : 'Failed to fetch customers')
       }
     } finally {
-      if (fetchId === fetchIdRef.current) setLoading(false)
+      if (fetchId === fetchIdRef.current) {
+        setLoading(false)
+        hasLoadedRef.current = true
+      }
     }
   }, [filters, sortField, sortDirection, pagination.page, pagination.pageSize])
 
