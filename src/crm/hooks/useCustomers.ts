@@ -1,13 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../../lib/supabase'
 import type {
+  ColumnFilter,
   CrmCustomer,
   CustomerFilters,
-  SortField,
+  GridColumnId,
   SortDirection,
+  SortField,
   PaginationState,
 } from '../types'
 import { DEFAULT_FILTERS, hasActiveFilters } from '../types'
+import { applyCustomerFilters } from '../grid/applyFilters'
+import { loadGridPrefs, saveGridPrefs, type GridPrefs } from '../grid/prefs'
 
 export interface FilteredTotals {
   mrr: number
@@ -25,10 +29,16 @@ interface UseCustomersReturn {
   sortDirection: SortDirection
   selectedIds: Set<string>
   filteredTotals: FilteredTotals
+  columnOrder: GridColumnId[]
+  columnWidths: Partial<Record<GridColumnId, number>>
   setFilters: (f: CustomerFilters) => void
+  setColumnFilter: (id: GridColumnId, filter: ColumnFilter | undefined) => void
+  clearFilters: () => void
   setSort: (field: SortField, dir?: SortDirection) => void
   setPage: (page: number) => void
   setPageSize: (size: number) => void
+  setColumnOrder: (order: GridColumnId[]) => void
+  setColumnWidth: (id: GridColumnId, width: number) => void
   toggleSelect: (id: string) => void
   toggleSelectAll: () => void
   clearSelection: () => void
@@ -36,13 +46,18 @@ interface UseCustomersReturn {
   refresh: () => void
 }
 
-export function useCustomers(): UseCustomersReturn {
+export function useCustomers(userId?: string | null): UseCustomersReturn {
+  const initial = useRef<GridPrefs | null>(null)
+  if (!initial.current) initial.current = loadGridPrefs(userId ?? undefined)
+
   const [customers, setCustomers] = useState<CrmCustomer[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [filters, setFilters] = useState<CustomerFilters>(DEFAULT_FILTERS)
-  const [sortField, setSortField] = useState<SortField>('created_at')
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  const [filters, setFiltersState] = useState<CustomerFilters>(initial.current.filters)
+  const [sortField, setSortField] = useState<SortField>(initial.current.sortField)
+  const [sortDirection, setSortDirection] = useState<SortDirection>(initial.current.sortDirection)
+  const [columnOrder, setColumnOrderState] = useState<GridColumnId[]>(initial.current.order)
+  const [columnWidths, setColumnWidths] = useState<Partial<Record<GridColumnId, number>>>(initial.current.widths)
   const [pagination, setPagination] = useState<PaginationState>({
     page: 1,
     pageSize: 50,
@@ -52,25 +67,15 @@ export function useCustomers(): UseCustomersReturn {
   const [filteredTotals, setFilteredTotals] = useState<FilteredTotals>({ mrr: 0, revenue: 0, filtered: false })
   const fetchIdRef = useRef(0)
 
-  function applyCustomerFilters(query: any, f: CustomerFilters) {
-    if (f.search) {
-      const term = `%${f.search}%`
-      query = query.or(`name.ilike.${term},email.ilike.${term},store_url.ilike.${term},notes.ilike.${term}`)
-    }
-    if (f.client_status.length > 0) query = query.in('client_status', f.client_status)
-    if (f.billing_channel.length > 0) query = query.in('billing_channel', f.billing_channel)
-    if (f.user_type.length > 0) query = query.in('user_type', f.user_type)
-    if (f.source.length > 0) query = query.in('source', f.source)
-    if (f.signup_date_from) query = query.gte('signup_date', f.signup_date_from)
-    if (f.signup_date_to) query = query.lte('signup_date', f.signup_date_to)
-    if (f.cancellation_date_from) query = query.gte('cancellation_date', f.cancellation_date_from)
-    if (f.cancellation_date_to) query = query.lte('cancellation_date', f.cancellation_date_to)
-    if (f.mrr_min != null) query = query.gte('effective_mrr', f.mrr_min)
-    if (f.mrr_max != null) query = query.lte('effective_mrr', f.mrr_max)
-    if (f.revenue_min != null) query = query.gte('effective_total_revenue', f.revenue_min)
-    if (f.revenue_max != null) query = query.lte('effective_total_revenue', f.revenue_max)
-    return query
-  }
+  useEffect(() => {
+    saveGridPrefs(userId ?? undefined, {
+      order: columnOrder,
+      widths: columnWidths,
+      sortField,
+      sortDirection,
+      filters,
+    })
+  }, [userId, columnOrder, columnWidths, sortField, sortDirection, filters])
 
   const fetchCustomers = useCallback(async () => {
     const fetchId = ++fetchIdRef.current
@@ -78,24 +83,16 @@ export function useCustomers(): UseCustomersReturn {
     setError(null)
 
     try {
-      let query = supabase
-        .from('crm_customers')
-        .select('*', { count: 'exact' })
-
+      let query = supabase.from('crm_customers').select('*', { count: 'exact' })
       query = applyCustomerFilters(query, filters)
+      query = query.order(sortField, { ascending: sortDirection === 'asc', nullsFirst: false })
 
-      // Sorting
-      query = query.order(sortField, { ascending: sortDirection === 'asc' })
-
-      // Pagination
       const from = (pagination.page - 1) * pagination.pageSize
       const to = from + pagination.pageSize - 1
       query = query.range(from, to)
 
       const { data, error: err, count } = await query
-
       if (fetchId !== fetchIdRef.current) return
-
       if (err) {
         setError(err.message)
         return
@@ -104,14 +101,10 @@ export function useCustomers(): UseCustomersReturn {
       setCustomers((data ?? []) as CrmCustomer[])
       setPagination((prev) => ({ ...prev, total: count ?? 0 }))
 
-      // Sum MRR/revenue across the full filtered set.
-      // Avoid PostgREST .sum() — generated columns often aren't in the API
-      // schema cache, which was leaving the footer at $0 with no error shown.
       const PAGE = 1000
       let mrr = 0
       let revenue = 0
       let fromIdx = 0
-
       for (;;) {
         let totQuery = supabase
           .from('crm_customers')
@@ -120,7 +113,6 @@ export function useCustomers(): UseCustomersReturn {
         const { data: totRows, error: totErr } = await totQuery.range(fromIdx, fromIdx + PAGE - 1)
         if (fetchId !== fetchIdRef.current) return
         if (totErr) break
-
         for (const c of totRows ?? []) {
           mrr += Number(c.mrr_override ?? c.calculated_mrr ?? 0)
           revenue += Number(c.total_revenue_override ?? c.calculated_total_revenue ?? 0)
@@ -129,19 +121,13 @@ export function useCustomers(): UseCustomersReturn {
         fromIdx += PAGE
       }
       if (fetchId !== fetchIdRef.current) return
-      setFilteredTotals({
-        mrr,
-        revenue,
-        filtered: hasActiveFilters(filters),
-      })
+      setFilteredTotals({ mrr, revenue, filtered: hasActiveFilters(filters) })
     } catch (e) {
       if (fetchId === fetchIdRef.current) {
         setError(e instanceof Error ? e.message : 'Failed to fetch customers')
       }
     } finally {
-      if (fetchId === fetchIdRef.current) {
-        setLoading(false)
-      }
+      if (fetchId === fetchIdRef.current) setLoading(false)
     }
   }, [filters, sortField, sortDirection, pagination.page, pagination.pageSize])
 
@@ -167,10 +153,25 @@ export function useCustomers(): UseCustomersReturn {
   }, [])
 
   const applyFilters = useCallback((f: CustomerFilters) => {
-    setFilters(f)
+    setFiltersState(f)
     setPagination((prev) => ({ ...prev, page: 1 }))
     setSelectedIds(new Set())
   }, [])
+
+  const setColumnFilter = useCallback((id: GridColumnId, filter: ColumnFilter | undefined) => {
+    setFiltersState((prev) => {
+      const next = { ...prev }
+      if (!filter) delete next[id]
+      else next[id] = filter
+      return next
+    })
+    setPagination((prev) => ({ ...prev, page: 1 }))
+    setSelectedIds(new Set())
+  }, [])
+
+  const clearFilters = useCallback(() => {
+    applyFilters(DEFAULT_FILTERS)
+  }, [applyFilters])
 
   const setPage = useCallback((page: number) => {
     setPagination((prev) => ({ ...prev, page }))
@@ -180,6 +181,14 @@ export function useCustomers(): UseCustomersReturn {
   const setPageSize = useCallback((pageSize: number) => {
     setPagination((prev) => ({ ...prev, pageSize, page: 1 }))
     setSelectedIds(new Set())
+  }, [])
+
+  const setColumnOrder = useCallback((order: GridColumnId[]) => {
+    setColumnOrderState(order)
+  }, [])
+
+  const setColumnWidth = useCallback((id: GridColumnId, width: number) => {
+    setColumnWidths((prev) => ({ ...prev, [id]: width }))
   }, [])
 
   const toggleSelect = useCallback((id: string) => {
@@ -213,10 +222,16 @@ export function useCustomers(): UseCustomersReturn {
     sortDirection,
     selectedIds,
     filteredTotals,
+    columnOrder,
+    columnWidths,
     setFilters: applyFilters,
+    setColumnFilter,
+    clearFilters,
     setSort,
     setPage,
     setPageSize,
+    setColumnOrder,
+    setColumnWidth,
     toggleSelect,
     toggleSelectAll,
     clearSelection,

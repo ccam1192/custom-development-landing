@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Download, Loader2 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 import type { CustomerFilters } from '../types'
+import { applyCustomerFilters } from '../grid/applyFilters'
 import * as XLSX from 'xlsx'
 
 interface ExportButtonProps {
@@ -19,16 +20,7 @@ export default function ExportButton({ filters, mode }: ExportButtonProps) {
       let query = supabase.from('crm_customers').select('*')
 
       if (mode === 'filtered') {
-        if (filters.search) {
-          const term = `%${filters.search}%`
-          query = query.or(`name.ilike.${term},email.ilike.${term},store_url.ilike.${term}`)
-        }
-        if (filters.client_status.length) query = query.in('client_status', filters.client_status)
-        if (filters.billing_channel.length) query = query.in('billing_channel', filters.billing_channel)
-        if (filters.user_type.length) query = query.in('user_type', filters.user_type)
-        if (filters.source.length) query = query.in('source', filters.source)
-        if (filters.signup_date_from) query = query.gte('signup_date', filters.signup_date_from)
-        if (filters.signup_date_to) query = query.lte('signup_date', filters.signup_date_to)
+        query = applyCustomerFilters(query, filters)
       }
 
       query = query.order('name')

@@ -191,21 +191,67 @@ export interface CrmKpis {
 
 /* ─── Filters / Pagination ─────────────────────────────────────────────────── */
 
-export interface CustomerFilters {
-  search: string
-  client_status: ClientStatus[]
-  billing_channel: BillingChannel[]
-  user_type: UserType[]
-  source: Source[]
-  signup_date_from: string | null
-  signup_date_to: string | null
-  cancellation_date_from: string | null
-  cancellation_date_to: string | null
-  mrr_min: number | null
-  mrr_max: number | null
-  revenue_min: number | null
-  revenue_max: number | null
+export type TextFilterOp =
+  | 'contains'
+  | 'not_contains'
+  | 'starts_with'
+  | 'ends_with'
+  | 'is'
+  | 'is_not'
+  | 'empty'
+  | 'not_empty'
+
+export type DateFilterOp =
+  | 'is'
+  | 'before'
+  | 'after'
+  | 'on_or_before'
+  | 'on_or_after'
+  | 'between'
+  | 'empty'
+  | 'not_empty'
+
+export type NumberFilterOp =
+  | 'eq'
+  | 'neq'
+  | 'gt'
+  | 'gte'
+  | 'lt'
+  | 'lte'
+  | 'between'
+  | 'empty'
+  | 'not_empty'
+
+export type GridColumnId =
+  | 'name'
+  | 'email'
+  | 'signup_date'
+  | 'store_url'
+  | 'user_type'
+  | 'billing_channel'
+  | 'client_status'
+  | 'cancellation_date'
+  | 'effective_mrr'
+  | 'effective_total_revenue'
+  | 'notes'
+
+export type TextColumnFilter = { kind: 'text'; op: TextFilterOp; value: string }
+export type EnumColumnFilter = { kind: 'enum'; values: string[] }
+export type DateColumnFilter = {
+  kind: 'date'
+  op: DateFilterOp
+  value: string | null
+  valueTo?: string | null
 }
+export type NumberColumnFilter = {
+  kind: 'number'
+  op: NumberFilterOp
+  value: number | null
+  valueTo?: number | null
+}
+export type ColumnFilter = TextColumnFilter | EnumColumnFilter | DateColumnFilter | NumberColumnFilter
+
+export type CustomerFilters = Partial<Record<GridColumnId, ColumnFilter>>
 
 export type SortField = keyof CrmCustomer
 export type SortDirection = 'asc' | 'desc'
@@ -216,38 +262,24 @@ export interface PaginationState {
   total: number
 }
 
-export const DEFAULT_FILTERS: CustomerFilters = {
-  search: '',
-  client_status: [],
-  billing_channel: [],
-  user_type: [],
-  source: [],
-  signup_date_from: null,
-  signup_date_to: null,
-  cancellation_date_from: null,
-  cancellation_date_to: null,
-  mrr_min: null,
-  mrr_max: null,
-  revenue_min: null,
-  revenue_max: null,
+export const DEFAULT_FILTERS: CustomerFilters = {}
+
+export function isColumnFilterActive(filter: ColumnFilter | undefined): boolean {
+  if (!filter) return false
+  if (filter.kind === 'enum') return filter.values.length > 0
+  if (filter.kind === 'text') {
+    if (filter.op === 'empty' || filter.op === 'not_empty') return true
+    return filter.value.trim().length > 0
+  }
+  if (filter.op === 'empty' || filter.op === 'not_empty') return true
+  if (filter.op === 'between') {
+    return filter.value != null && filter.value !== '' && filter.valueTo != null && filter.valueTo !== ''
+  }
+  return filter.value != null && filter.value !== ''
 }
 
 export function hasActiveFilters(f: CustomerFilters): boolean {
-  return (
-    !!f.search ||
-    f.client_status.length > 0 ||
-    f.billing_channel.length > 0 ||
-    f.user_type.length > 0 ||
-    f.source.length > 0 ||
-    f.signup_date_from != null ||
-    f.signup_date_to != null ||
-    f.cancellation_date_from != null ||
-    f.cancellation_date_to != null ||
-    f.mrr_min != null ||
-    f.mrr_max != null ||
-    f.revenue_min != null ||
-    f.revenue_max != null
-  )
+  return (Object.keys(f) as GridColumnId[]).some((key) => isColumnFilterActive(f[key]))
 }
 
 /* ─── Helper to get displayed MRR / Revenue ────────────────────────────────── */

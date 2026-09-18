@@ -1,12 +1,12 @@
 import { useState, useCallback } from 'react'
-import { LogOut, FileSpreadsheet, Activity, AlertTriangle } from 'lucide-react'
+import { LogOut, FileSpreadsheet, Activity, AlertTriangle, FilterX } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import { useCustomers } from '../hooks/useCustomers'
 import { useKpis } from '../hooks/useKpis'
 import { useSyncStatus } from '../hooks/useSyncStatus'
 import KpiCards from '../components/KpiCards'
-import FilterBar from '../components/FilterBar'
 import CustomerTable from '../components/CustomerTable'
+import { hasActiveFilters } from '../types'
 import CustomerDetail from '../components/CustomerDetail'
 import EditCustomerModal from '../components/EditCustomerModal'
 import SyncControls from '../components/SyncControls'
@@ -29,15 +29,20 @@ export default function CrmDashboardPage() {
     sortDirection,
     selectedIds,
     filteredTotals,
-    setFilters,
+    columnOrder,
+    columnWidths,
+    setColumnFilter,
+    clearFilters,
     setSort,
     setPage,
     setPageSize,
+    setColumnOrder,
+    setColumnWidth,
     toggleSelect,
     toggleSelectAll,
     clearSelection,
     refresh,
-  } = useCustomers()
+  } = useCustomers(user?.id)
   const { kpis, loading: kpisLoading, refresh: refreshKpis } = useKpis()
 
   const handleRefresh = useCallback(() => {
@@ -57,8 +62,8 @@ export default function CrmDashboardPage() {
       {/* Top bar */}
       <header className="bg-white border-b border-gray-200 shrink-0 z-30">
         <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h1 className="text-xl font-bold text-gray-900">Boardroom CRM</h1>
+          <div className="flex items-center gap-4 min-w-0">
+            <h1 className="text-xl font-bold text-gray-900 shrink-0">CRM</h1>
             <SyncControls
               states={states}
               syncing={syncing}
@@ -67,6 +72,18 @@ export default function CrmDashboardPage() {
               onSync={triggerSync}
               onShopifySync={triggerShopifySync}
             />
+            {!kpisLoading && (
+              <div className="hidden xl:flex items-center gap-3 text-xs text-gray-500 shrink-0 pl-2 border-l border-gray-200">
+                <span>Active {kpis.totalActiveCustomers.toLocaleString()}</span>
+                <span>Trial {kpis.totalInTrial.toLocaleString()}</span>
+                <span>
+                  MRR{' '}
+                  {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(
+                    kpis.mrr
+                  )}
+                </span>
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -127,9 +144,17 @@ export default function CrmDashboardPage() {
 
           {/* Filters + actions row */}
           <div className="space-y-3">
-            <FilterBar filters={filters} onChange={setFilters} />
-
             <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={clearFilters}
+                disabled={!hasActiveFilters(filters)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 text-sm text-gray-700 hover:border-primary hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed bg-white"
+                title="Clear all column filters"
+              >
+                <FilterX size={14} />
+                Clear Filters
+              </button>
               <BulkActions
                 selectedIds={selectedIds}
                 customers={customers}
@@ -151,6 +176,9 @@ export default function CrmDashboardPage() {
             pagination={pagination}
             selectedIds={selectedIds}
             filteredTotals={filteredTotals}
+            columnOrder={columnOrder}
+            columnWidths={columnWidths}
+            filters={filters}
             onSort={setSort}
             onToggleSelect={toggleSelect}
             onToggleSelectAll={toggleSelectAll}
@@ -158,6 +186,9 @@ export default function CrmDashboardPage() {
             onPageSizeChange={setPageSize}
             onView={setViewCustomer}
             onEdit={setEditCustomer}
+            onColumnOrderChange={setColumnOrder}
+            onColumnWidthChange={setColumnWidth}
+            onFilterChange={setColumnFilter}
           />
           </div>
         </main>
