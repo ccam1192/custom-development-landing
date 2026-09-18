@@ -14,6 +14,7 @@ import BulkActions from '../components/BulkActions'
 import ExportButton from '../components/ExportButton'
 import ImportWizard from '../components/ImportWizard'
 import DataHealthPanel from '../components/DataHealthPanel'
+import SavedViewsMenu from '../components/SavedViewsMenu'
 import SyncLogsPanel from '../components/SyncLogsPanel'
 import type { CrmCustomer } from '../types'
 
@@ -38,6 +39,15 @@ export default function CrmDashboardPage() {
     setPageSize,
     setColumnOrder,
     setColumnWidth,
+    views,
+    activeViewId,
+    defaultViewId,
+    viewDirty,
+    selectView,
+    saveCurrentView,
+    saveViewAs,
+    setDefaultView,
+    deleteView,
     toggleSelect,
     toggleSelectAll,
     clearSelection,
@@ -72,18 +82,6 @@ export default function CrmDashboardPage() {
               onSync={triggerSync}
               onShopifySync={triggerShopifySync}
             />
-            {!kpisLoading && (
-              <div className="hidden xl:flex items-center gap-3 text-xs text-gray-500 shrink-0 pl-2 border-l border-gray-200">
-                <span>Active {kpis.totalActiveCustomers.toLocaleString()}</span>
-                <span>Trial {kpis.totalInTrial.toLocaleString()}</span>
-                <span>
-                  MRR{' '}
-                  {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(
-                    kpis.mrr
-                  )}
-                </span>
-              </div>
-            )}
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -145,6 +143,17 @@ export default function CrmDashboardPage() {
           {/* Filters + actions row */}
           <div className="space-y-3">
             <div className="flex items-center gap-2 flex-wrap">
+              <SavedViewsMenu
+                views={views}
+                activeViewId={activeViewId}
+                defaultViewId={defaultViewId}
+                viewDirty={viewDirty}
+                onSelect={selectView}
+                onSave={saveCurrentView}
+                onSaveAs={saveViewAs}
+                onSetDefault={setDefaultView}
+                onDelete={deleteView}
+              />
               <button
                 type="button"
                 onClick={clearFilters}

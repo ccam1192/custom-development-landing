@@ -53,6 +53,7 @@ export default function SyncControls({
   onShopifySync,
 }: SyncControlsProps) {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const [showError, setShowError] = useState(false)
   const getState = (p: SyncProvider) => states.find((s) => s.provider === p)
   const shopifyState = getState('shopify')
@@ -143,53 +144,82 @@ export default function SyncControls({
         )}
       </div>
 
-      <div className="text-[11px] leading-4 text-gray-500 min-w-[220px] max-w-[420px]">
-        {shopifyBusy && shopifyProgress ? (
-          <>
-            <div className="text-gray-700 font-medium flex items-center gap-1">
-              <StatusIcon status="running" />
-              {shopifyProgress.percent}% · {shopifyProgress.label}
-            </div>
-            <div className="mt-1 h-1.5 w-full max-w-[240px] bg-gray-200 rounded overflow-hidden">
-              <div
-                className="h-full bg-primary transition-[width] duration-300"
-                style={{ width: `${Math.min(100, Math.max(0, shopifyProgress.percent))}%` }}
-              />
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="flex items-center gap-1 text-gray-600">
-              <StatusIcon status={failed ? 'failed' : lastShopifyLog?.status ?? shopifyState?.status ?? 'idle'} />
-              Last Shopify sync: {lastSyncLabel(shopifyBusy ? 'running' : shopifyState?.status, lastShopifyLog?.status)}
-              {' · '}
-              {formatDate(lastShopifyLog?.completed_at ?? lastShopifyLog?.started_at ?? shopifyState?.last_sync_at)}
-            </div>
-            <div>
-              Last successful: <span className="text-gray-700">{formatDate(shopifyState?.last_successful_at)}</span>
-            </div>
-            <div>
-              {Number(lastShopifyLog?.records_processed ?? 0)} processed · {Number(lastShopifyLog?.records_updated ?? 0)}{' '}
-              customers updated · {Number(meta.txnProcessed ?? 0)} transactions
-            </div>
-            {stripeState && (
-              <div className="text-gray-400">
-                Stripe {formatDate(stripeState.last_successful_at)} · Boardroom {formatDate(boardroomState?.last_successful_at)}
+      {shopifyBusy && shopifyProgress ? (
+        <div className="text-[11px] leading-4 text-gray-500 min-w-[180px] max-w-[280px]">
+          <div className="text-gray-700 font-medium flex items-center gap-1">
+            <StatusIcon status="running" />
+            {shopifyProgress.percent}% · {shopifyProgress.label}
+          </div>
+          <div className="mt-1 h-1.5 w-full max-w-[240px] bg-gray-200 rounded overflow-hidden">
+            <div
+              className="h-full bg-primary transition-[width] duration-300"
+              style={{ width: `${Math.min(100, Math.max(0, shopifyProgress.percent))}%` }}
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setDetailsOpen((v) => !v)}
+            className={`flex items-center gap-1 text-[11px] px-2 py-1 rounded-md hover:bg-gray-50 ${
+              failed ? 'text-red-600' : 'text-gray-500'
+            }`}
+            title="Batch sync status. Stripe also updates live via webhooks."
+          >
+            <StatusIcon status={failed ? 'failed' : lastShopifyLog?.status ?? shopifyState?.status ?? 'idle'} />
+            Shopify · {lastSyncLabel(shopifyState?.status, lastShopifyLog?.status)}
+            <ChevronDown size={12} className={detailsOpen ? 'rotate-180' : ''} />
+          </button>
+          {detailsOpen && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setDetailsOpen(false)} />
+              <div className="absolute left-0 top-full mt-1 z-40 w-80 bg-white border border-gray-200 rounded-lg shadow-lg p-3 text-[11px] leading-4 text-gray-600">
+                <p className="text-gray-500 mb-2">
+                  These timestamps are the last <span className="font-medium text-gray-700">batch syncs</span>. Stripe
+                  also updates live via webhooks between full syncs.
+                </p>
+                <div className="space-y-1">
+                  <div>
+                    <span className="font-medium text-gray-700">Shopify</span>
+                    {' · '}
+                    {lastSyncLabel(shopifyState?.status, lastShopifyLog?.status)}
+                    {' · '}
+                    {formatDate(lastShopifyLog?.completed_at ?? lastShopifyLog?.started_at ?? shopifyState?.last_sync_at)}
+                  </div>
+                  <div>Last successful checkpoint: {formatDate(shopifyState?.last_successful_at)}</div>
+                  <div className="text-gray-400">
+                    {Number(lastShopifyLog?.records_processed ?? 0)} processed ·{' '}
+                    {Number(lastShopifyLog?.records_updated ?? 0)} customers · {Number(meta.txnProcessed ?? 0)}{' '}
+                    transactions
+                  </div>
+                  <div>
+                    <span className="font-medium text-gray-700">Stripe</span>
+                    {' · batch '}
+                    {formatDate(stripeState?.last_successful_at)}
+                    <span className="text-gray-400"> · live webhooks</span>
+                  </div>
+                  <div>
+                    <span className="font-medium text-gray-700">Boardroom</span>
+                    {' · '}
+                    {formatDate(boardroomState?.last_successful_at)}
+                  </div>
+                </div>
+                {failed && errorText && (
+                  <button type="button" className="text-red-600 hover:underline mt-2" onClick={() => setShowError((v) => !v)}>
+                    {showError ? 'Hide error' : 'View error'}
+                  </button>
+                )}
+                {showError && errorText && (
+                  <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap text-[10px] text-red-700 bg-red-50 rounded p-1">
+                    {errorText.replace(/sk_live_[A-Za-z0-9]+/g, '[redacted]')}
+                  </pre>
+                )}
               </div>
-            )}
-            {failed && errorText && (
-              <button type="button" className="text-red-600 hover:underline" onClick={() => setShowError((v) => !v)}>
-                {showError ? 'Hide error' : 'View error'}
-              </button>
-            )}
-            {showError && errorText && (
-              <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap text-[10px] text-red-700 bg-red-50 rounded p-1">
-                {errorText.replace(/sk_live_[A-Za-z0-9]+/g, '[redacted]')}
-              </pre>
-            )}
-          </>
-        )}
-      </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }

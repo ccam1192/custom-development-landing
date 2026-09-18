@@ -7,11 +7,12 @@ export default function DataHealthPanel() {
   const [issues, setIssues] = useState<CrmDataHealthIssue[]>([])
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
+  const [dismissingAll, setDismissingAll] = useState(false)
   const [dryRun, setDryRun] = useState<string | null>(null)
   const [summary, setSummary] = useState<Record<string, number> | null>(null)
 
-  const fetchIssues = useCallback(async () => {
-    setLoading(true)
+  const fetchIssues = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     const { data } = await supabase
       .from('crm_data_health_issues')
       .select('*')
@@ -21,7 +22,7 @@ export default function DataHealthPanel() {
       .limit(100)
 
     setIssues((data ?? []) as CrmDataHealthIssue[])
-    setLoading(false)
+    if (!silent) setLoading(false)
   }, [])
 
   useEffect(() => {
@@ -54,7 +55,21 @@ export default function DataHealthPanel() {
       .from('crm_data_health_issues')
       .update({ resolved: true, resolved_at: new Date().toISOString() })
       .eq('id', id)
-    fetchIssues()
+    fetchIssues(true)
+  }
+
+  async function dismissAll() {
+    if (issues.length === 0 || dismissingAll) return
+    setDismissingAll(true)
+    try {
+      await supabase
+        .from('crm_data_health_issues')
+        .update({ resolved: true, resolved_at: new Date().toISOString() })
+        .eq('resolved', false)
+      await fetchIssues(true)
+    } finally {
+      setDismissingAll(false)
+    }
   }
 
   const severityIcon = (s: string) => {
@@ -75,8 +90,14 @@ export default function DataHealthPanel() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-700">Data Health</h3>
+      <div className="flex items-center justify-end gap-3">
+        <button
+          onClick={dismissAll}
+          disabled={issues.length === 0 || dismissingAll || loading}
+          className="text-xs text-gray-500 hover:text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {dismissingAll ? 'Dismissing…' : 'Dismiss All'}
+        </button>
         <button
           onClick={runHealthCheck}
           disabled={running}

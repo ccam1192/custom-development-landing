@@ -11,7 +11,17 @@ import type {
 } from '../types'
 import { DEFAULT_FILTERS, hasActiveFilters } from '../types'
 import { applyCustomerFilters } from '../grid/applyFilters'
-import { loadGridPrefs, saveGridPrefs, type GridPrefs } from '../grid/prefs'
+import {
+  ALL_CUSTOMERS_VIEW_ID,
+  DEFAULT_GRID_PREFS,
+  loadGridWorkspace,
+  prefsEqual,
+  sanitizePrefs,
+  saveGridWorkspace,
+  snapshotPrefs,
+  type GridPrefs,
+  type SavedGridView,
+} from '../grid/prefs'
 
 export interface FilteredTotals {
   mrr: number
@@ -39,6 +49,15 @@ interface UseCustomersReturn {
   setPageSize: (size: number) => void
   setColumnOrder: (order: GridColumnId[]) => void
   setColumnWidth: (id: GridColumnId, width: number) => void
+  views: SavedGridView[]
+  activeViewId: string
+  defaultViewId: string
+  viewDirty: boolean
+  selectView: (id: string) => void
+  saveCurrentView: () => void
+  saveViewAs: (name: string) => void
+  setDefaultView: (id: string) => void
+  deleteView: (id: string) => void
   toggleSelect: (id: string) => void
   toggleSelectAll: () => void
   clearSelection: () => void
@@ -47,17 +66,20 @@ interface UseCustomersReturn {
 }
 
 export function useCustomers(userId?: string | null): UseCustomersReturn {
-  const initial = useRef<GridPrefs | null>(null)
-  if (!initial.current) initial.current = loadGridPrefs(userId ?? undefined)
+  const initial = useRef(loadGridWorkspace(userId ?? undefined))
+  const uid = userId ?? undefined
 
   const [customers, setCustomers] = useState<CrmCustomer[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [filters, setFiltersState] = useState<CustomerFilters>(initial.current.filters)
-  const [sortField, setSortField] = useState<SortField>(initial.current.sortField)
-  const [sortDirection, setSortDirection] = useState<SortDirection>(initial.current.sortDirection)
-  const [columnOrder, setColumnOrderState] = useState<GridColumnId[]>(initial.current.order)
-  const [columnWidths, setColumnWidths] = useState<Partial<Record<GridColumnId, number>>>(initial.current.widths)
+  const [filters, setFiltersState] = useState<CustomerFilters>(initial.current.prefs.filters)
+  const [sortField, setSortField] = useState<SortField>(initial.current.prefs.sortField)
+  const [sortDirection, setSortDirection] = useState<SortDirection>(initial.current.prefs.sortDirection)
+  const [columnOrder, setColumnOrderState] = useState<GridColumnId[]>(initial.current.prefs.order)
+  const [columnWidths, setColumnWidths] = useState<Partial<Record<GridColumnId, number>>>(initial.current.prefs.widths)
+  const [views, setViews] = useState<SavedGridView[]>(initial.current.views)
+  const [activeViewId, setActiveViewId] = useState<string>(initial.current.activeViewId ?? ALL_CUSTOMERS_VIEW_ID)
+  const [defaultViewId, setDefaultViewId] = useState<string>(initial.current.defaultViewId ?? ALL_CUSTOMERS_VIEW_ID)
   const [pagination, setPagination] = useState<PaginationState>({
     page: 1,
     pageSize: 50,
@@ -67,15 +89,28 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
   const [filteredTotals, setFilteredTotals] = useState<FilteredTotals>({ mrr: 0, revenue: 0, filtered: false })
   const fetchIdRef = useRef(0)
 
+  const currentPrefs = (): GridPrefs => ({
+    order: columnOrder,
+    widths: columnWidths,
+    sortField,
+    sortDirection,
+    filters,
+  })
+
+  const activeSaved = views.find((v) => v.id === activeViewId)
+  const baseline = activeViewId === ALL_CUSTOMERS_VIEW_ID ? DEFAULT_GRID_PREFS : activeSaved?.prefs
+  const viewDirty = !baseline || !prefsEqual(currentPrefs(), baseline)
+
   useEffect(() => {
-    saveGridPrefs(userId ?? undefined, {
-      order: columnOrder,
-      widths: columnWidths,
-      sortField,
-      sortDirection,
-      filters,
+    saveGridWorkspace(uid, {
+      prefs: currentPrefs(),
+      views,
+      defaultViewId,
+      activeViewId,
     })
-  }, [userId, columnOrder, columnWidths, sortField, sortDirection, filters])
+    // currentPrefs is derived each render; persist the snapshot we just built
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, columnOrder, columnWidths, sortField, sortDirection, filters, views, defaultViewId, activeViewId])
 
   const fetchCustomers = useCallback(async () => {
     const fetchId = ++fetchIdRef.current
@@ -212,6 +247,64 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
     setSelectedIds(new Set(customers.map((c) => c.id)))
   }, [customers])
 
+  const applyLayout = useCallback((prefs: GridPrefs) => {
+    const next = sanitizePrefs(prefs)
+    setFiltersState(next.filters)
+    setSortField(next.sortField)
+    setSortDirection(next.sortDirection)
+    setColumnOrderState(next.order)
+    setColumnWidths(next.widths)
+    setPagination((prev) => ({ ...prev, page: 1 }))
+    setSelectedIds(new Set())
+  }, [])
+
+  const selectView = useCallback(
+    (id: string) => {
+      const view = id === ALL_CUSTOMERS_VIEW_ID ? { prefs: DEFAULT_GRID_PREFS } : views.find((v) => v.id === id)
+      if (!view) return
+      setActiveViewId(id)
+      applyLayout(snapshotPrefs(view.prefs))
+    },
+    [views, applyLayout],
+  )
+
+  const saveCurrentView = useCallback(() => {
+    const prefs = snapshotPrefs(sanitizePrefs(currentPrefs()))
+    if (activeViewId === ALL_CUSTOMERS_VIEW_ID) return
+    setViews((prev) => prev.map((v) => (v.id === activeViewId ? { ...v, prefs } : v)))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeViewId, columnOrder, columnWidths, sortField, sortDirection, filters])
+
+  const saveViewAs = useCallback(
+    (name: string) => {
+      const trimmed = name.trim()
+      if (!trimmed) return
+      const id = `view_${Date.now().toString(36)}`
+      const next: SavedGridView = { id, name: trimmed, prefs: snapshotPrefs(sanitizePrefs(currentPrefs())) }
+      setViews((prev) => [...prev, next])
+      setActiveViewId(id)
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [columnOrder, columnWidths, sortField, sortDirection, filters],
+  )
+
+  const setDefaultView = useCallback((id: string) => {
+    setDefaultViewId(id)
+  }, [])
+
+  const deleteView = useCallback(
+    (id: string) => {
+      if (id === ALL_CUSTOMERS_VIEW_ID) return
+      setViews((prev) => prev.filter((v) => v.id !== id))
+      setDefaultViewId((prev) => (prev === id ? ALL_CUSTOMERS_VIEW_ID : prev))
+      if (activeViewId === id) {
+        setActiveViewId(ALL_CUSTOMERS_VIEW_ID)
+        applyLayout(DEFAULT_GRID_PREFS)
+      }
+    },
+    [activeViewId, applyLayout],
+  )
+
   return {
     customers,
     loading,
@@ -232,6 +325,15 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
     setPageSize,
     setColumnOrder,
     setColumnWidth,
+    views,
+    activeViewId,
+    defaultViewId,
+    viewDirty,
+    selectView,
+    saveCurrentView,
+    saveViewAs,
+    setDefaultView,
+    deleteView,
     toggleSelect,
     toggleSelectAll,
     clearSelection,
