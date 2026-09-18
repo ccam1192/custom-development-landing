@@ -53,9 +53,9 @@ export default function CrmDashboardPage() {
   const [showSidebar, setShowSidebar] = useState<'health' | 'logs' | null>(null)
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
       {/* Top bar */}
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-30">
+      <header className="bg-white border-b border-gray-200 shrink-0 z-30">
         <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <h1 className="text-xl font-bold text-gray-900">Boardroom CRM</h1>
@@ -106,11 +106,10 @@ export default function CrmDashboardPage() {
         </div>
       </header>
 
-      <div className="flex">
+      <div className="flex flex-1 min-h-0">
         {/* Main content */}
-        <main className={`flex-1 max-w-[1600px] mx-auto px-4 sm:px-6 py-6 space-y-6 transition-all ${
-          showSidebar ? 'mr-[360px]' : ''
-        }`}>
+        <main className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 space-y-6">
+          <div className="max-w-[1600px] mx-auto space-y-6">
           {/* KPI cards */}
           <KpiCards kpis={kpis} loading={kpisLoading} />
 
@@ -160,11 +159,12 @@ export default function CrmDashboardPage() {
             onView={setViewCustomer}
             onEdit={setEditCustomer}
           />
+          </div>
         </main>
 
-        {/* Right sidebar */}
+        {/* Right sidebar sits in the layout below the header so its actions stay clickable */}
         {showSidebar && (
-          <aside className="fixed right-0 top-[57px] bottom-0 w-[360px] bg-white border-l border-gray-200 overflow-y-auto p-4 z-20">
+          <aside className="w-[360px] shrink-0 bg-white border-l border-gray-200 overflow-y-auto p-4">
             {showSidebar === 'health' && (
               <>
                 <h2 className="text-sm font-bold text-gray-900 mb-4">Data Health</h2>
