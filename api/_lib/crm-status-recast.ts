@@ -106,6 +106,14 @@ function isoDate(value: string | null | undefined): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString()
 }
 
+function sameInstant(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a && !b) return true
+  if (!a || !b) return false
+  const ta = new Date(a).getTime()
+  const tb = new Date(b).getTime()
+  return !Number.isNaN(ta) && ta === tb
+}
+
 function keepLatest(map: Map<string, string>, key: string, occurredAt: string) {
   const existing = map.get(key)
   if (!existing || new Date(occurredAt).getTime() > new Date(existing).getTime()) {
@@ -179,9 +187,10 @@ export async function recastCrmClientStatuses(supabase: SupabaseClient): Promise
     const storedRevenue = Number(c.total_revenue_override ?? c.calculated_total_revenue ?? 0)
     const lifecycle = shopifyLifecycle(c.shopify_subscription_status)
 
+    const stripePaidRevenue = Math.max(stripeRevenue, storedRevenue)
     const confirmedRevenue =
       c.billing_channel === 'stripe'
-        ? stripeRevenue
+        ? stripePaidRevenue
         : c.billing_channel === 'shopify'
           ? Math.max(shopifyRevenue, storedRevenue)
           : storedRevenue
@@ -197,11 +206,24 @@ export async function recastCrmClientStatuses(supabase: SupabaseClient): Promise
         stripeTrialEnd: c.stripe_trial_end,
         stripeCanceledAt: c.stripe_canceled_at,
         boardroomSubscriptionStatus: c.boardroom_subscription_status,
-        confirmedRevenue: stripeRevenue,
-        hasSuccessfulStripePayment: stripeRevenue > 0,
+        confirmedRevenue: stripePaidRevenue,
+        hasSuccessfulStripePayment: stripePaidRevenue > 0,
       })
-      const displayRevenue = Math.max(stripeRevenue, storedRevenue)
-      if (nextStatus === 'prospect' && displayRevenue > 0) {
+      const liveStripe =
+        c.stripe_subscription_status === 'active' || c.stripe_subscription_status === 'past_due'
+      if (liveStripe && stripePaidRevenue > 0) {
+        nextStatus = 'active_customer'
+      } else if (
+        !liveStripe &&
+        nextStatus === 'active_customer' &&
+        (c.cancellation_date ||
+          c.stripe_canceled_at ||
+          c.client_status === 'canceled' ||
+          c.stripe_subscription_status === 'canceled' ||
+          c.stripe_subscription_status === 'incomplete_expired')
+      ) {
+        nextStatus = 'canceled'
+      } else if (nextStatus === 'prospect' && stripePaidRevenue > 0) {
         nextStatus = c.cancellation_date || c.stripe_canceled_at ? 'canceled' : 'active_customer'
       }
     } else if (c.billing_channel === 'shopify') {
@@ -246,7 +268,7 @@ export async function recastCrmClientStatuses(supabase: SupabaseClient): Promise
         cancellationDate = null
       }
       const currentCancel = isoDate(c.cancellation_date)
-      if (currentCancel !== cancellationDate) {
+      if (!sameInstant(currentCancel, cancellationDate)) {
         patch.cancellation_date = cancellationDate
       }
 
@@ -262,6 +284,18 @@ export async function recastCrmClientStatuses(supabase: SupabaseClient): Promise
         if (Number(c.calculated_mrr ?? 0) !== calculatedMrr) {
           patch.calculated_mrr = calculatedMrr
         }
+      }
+    }
+
+    if (c.billing_channel === 'stripe') {
+      const liveStripe =
+        c.stripe_subscription_status === 'active' || c.stripe_subscription_status === 'past_due'
+      if (
+        liveStripe &&
+        (nextStatus === 'active_customer' || nextStatus === 'in_trial') &&
+        c.cancellation_date
+      ) {
+        patch.cancellation_date = null
       }
     }
 

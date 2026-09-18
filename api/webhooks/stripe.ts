@@ -26,6 +26,8 @@ type CrmRow = {
   billing_channel: string | null
   store_url: string | null
   signup_date: string | null
+  total_revenue_override: number | null
+  calculated_total_revenue: number | null
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -91,7 +93,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 }
 
 const CRM_WEBHOOK_COLUMNS =
-  'id, user_type, boardroom_subscription_status, cancellation_date, email, name, billing_channel, store_url, signup_date'
+  'id, user_type, boardroom_subscription_status, cancellation_date, email, name, billing_channel, store_url, signup_date, total_revenue_override, calculated_total_revenue'
 
 async function findCrmByStripeId(stripeCustomerId: string): Promise<CrmRow | null> {
   const { data } = await supabaseAdmin
@@ -223,7 +225,9 @@ async function handleSubscriptionEvent(sub: Stripe.Subscription) {
     .eq('status', 'succeeded')
     .gt('amount', 0)
 
-  const hasPayment = (count ?? 0) > 0
+  const hasPayment =
+    (count ?? 0) > 0 ||
+    Number(customer.total_revenue_override ?? customer.calculated_total_revenue ?? 0) > 0
 
   const clientStatus = determineClientStatus({
     userType: customer.user_type,

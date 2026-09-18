@@ -66,9 +66,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       store_url: string | null
       shopify_shop_domain: string | null
       signup_date: string | null
+      total_revenue_override: number | null
+      calculated_total_revenue: number | null
     }>(
       'crm_customers',
-      'id, email, stripe_customer_id, client_status, billing_channel, name, store_url, shopify_shop_domain, signup_date'
+      'id, email, stripe_customer_id, client_status, billing_channel, name, store_url, shopify_shop_domain, signup_date, total_revenue_override, calculated_total_revenue'
     )
 
     const crmByStripeId = new Map<string, string>()
@@ -79,6 +81,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const crmDomainById = new Map<string, string>()
     const crmStoreUrlById = new Map<string, string | null>()
     const crmSignupById = new Map<string, string | null>()
+    const crmStoredRevenueById = new Map<string, number>()
     for (const c of existingCrm) {
       if (c.stripe_customer_id) crmByStripeId.set(c.stripe_customer_id, c.id)
       if (c.email) crmByEmail.set(c.email.toLowerCase().trim(), c.id)
@@ -86,6 +89,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       crmBillingById.set(c.id, c.billing_channel ?? 'none')
       crmStoreUrlById.set(c.id, c.store_url)
       crmSignupById.set(c.id, c.signup_date)
+      crmStoredRevenueById.set(
+        c.id,
+        Number(c.total_revenue_override ?? c.calculated_total_revenue ?? 0)
+      )
       const domain =
         myshopifyDomainFromUnknown(c.shopify_shop_domain) ?? myshopifyDomainFromUnknown(c.store_url)
       if (domain) {
@@ -261,16 +268,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const sub = merged.sub
         const planAmount = sub?.items?.data?.[0]?.price?.unit_amount ?? null
 
-        const clientStatus = determineClientStatus({
-          stripeSubscriptionStatus: sub?.status ?? null,
-          stripeTrialEnd: sub?.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null,
-          stripeCanceledAt: sub?.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
-          hasSuccessfulPayment: merged.hasPayment,
-          hasShopifyRevenue: false,
-        })
-
-        const calculatedMrr = calculateMrr({ clientStatus, stripePlanAmount: planAmount })
-
         const record: Record<string, unknown> = {
           stripe_customer_id: merged.primaryId,
           stripe_subscription_id: sub?.id ?? null,
@@ -282,7 +279,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           stripe_plan_amount: planAmount,
           stripe_cancel_at: sub?.cancel_at ? new Date(sub.cancel_at * 1000).toISOString() : null,
           stripe_canceled_at: sub?.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
-          calculated_mrr: calculatedMrr,
           calculated_total_revenue: merged.totalRevenue,
           last_synced_at: new Date().toISOString(),
           billing_channel: 'stripe',
@@ -317,6 +313,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         }
         if (existingId === 'pending') existingId = null
+
+        const storedRev = existingId ? (crmStoredRevenueById.get(existingId) ?? 0) : 0
+        const paid = merged.hasPayment || storedRev > 0
+        const clientStatus = determineClientStatus({
+          stripeSubscriptionStatus: sub?.status ?? null,
+          stripeTrialEnd: sub?.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null,
+          stripeCanceledAt: sub?.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
+          hasSuccessfulPayment: paid,
+          hasShopifyRevenue: false,
+        })
+        const calculatedMrr = calculateMrr({ clientStatus, stripePlanAmount: planAmount })
+        record.calculated_mrr = calculatedMrr
         if (merged.storeDomain && (!existingId || !crmStoreUrlById.get(existingId))) {
           record.store_url = `https://${merged.storeDomain}`
         }
