@@ -121,6 +121,7 @@ function parseUserType(val: string): UserType {
   const v = val?.toLowerCase().trim() ?? ''
   if (v.includes('agency') && v.includes('client')) return 'agency_client'
   if (v.includes('agency')) return 'agency'
+  if (v.includes('custom')) return 'custom'
   return 'standard'
 }
 

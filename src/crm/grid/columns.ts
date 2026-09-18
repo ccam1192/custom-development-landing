@@ -3,9 +3,8 @@ import type {
   ClientStatus,
   GridColumnId,
   SortField,
-  UserType,
 } from '../types'
-import { BILLING_CHANNEL_LABELS, CLIENT_STATUS_LABELS, USER_TYPE_LABELS } from '../types'
+import { BILLING_CHANNEL_LABELS, CLIENT_STATUS_LABELS, USER_TYPE_LABELS, USER_TYPE_VALUES } from '../types'
 
 export type ColumnFilterKind = 'text' | 'enum' | 'date' | 'number'
 
@@ -39,7 +38,7 @@ export const GRID_COLUMNS: GridColumnDef[] = [
     filterKind: 'enum',
     defaultWidth: 120,
     minWidth: 90,
-    enumOptions: (['agency', 'agency_client', 'standard'] as UserType[]).map((value) => ({
+    enumOptions: USER_TYPE_VALUES.map((value) => ({
       value,
       label: USER_TYPE_LABELS[value],
     })),

@@ -200,7 +200,7 @@ export default function CustomerTable({
           <span className="text-gray-300">—</span>
         )
       case 'user_type':
-        return <span className="text-gray-600 whitespace-nowrap">{USER_TYPE_LABELS[c.user_type]}</span>
+        return <span className="text-gray-600 whitespace-nowrap">{USER_TYPE_LABELS[c.user_type] ?? c.user_type}</span>
       case 'billing_channel':
         return <span className="text-gray-600 whitespace-nowrap">{BILLING_CHANNEL_LABELS[c.billing_channel]}</span>
       case 'client_status':

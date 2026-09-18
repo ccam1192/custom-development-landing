@@ -1,6 +1,6 @@
 /* ─── Enum value types ─────────────────────────────────────────────────────── */
 
-export type UserType = 'agency' | 'agency_client' | 'standard'
+export type UserType = 'agency' | 'agency_client' | 'standard' | 'custom'
 export type BillingChannel = 'stripe' | 'shopify' | 'other' | 'none'
 export type Source = 'stripe' | 'shopify' | 'agency' | 'appsumo' | 'custom' | 'other'
 export type ClientStatus = 'prospect' | 'in_trial' | 'active_customer' | 'canceled' | 'agency_client'
@@ -16,10 +16,13 @@ export type DataIssueSeverity = 'warning' | 'error' | 'info'
 /* ─── Display helpers ──────────────────────────────────────────────────────── */
 
 export const USER_TYPE_LABELS: Record<UserType, string> = {
+  standard: 'Standard',
   agency: 'Agency',
   agency_client: 'Agency Client',
-  standard: 'Standard',
+  custom: 'Custom',
 }
+
+export const USER_TYPE_VALUES: UserType[] = ['standard', 'agency', 'agency_client', 'custom']
 
 export const BILLING_CHANNEL_LABELS: Record<BillingChannel, string> = {
   stripe: 'Stripe',

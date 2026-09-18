@@ -1,7 +1,53 @@
 import { useState } from 'react'
-import { Trash2, Download, X } from 'lucide-react'
+import { Trash2, Download, X, Users, ChevronDown } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
-import type { CrmCustomer } from '../types'
+import type { ClientStatus, CrmCustomer, UserType } from '../types'
+import { USER_TYPE_LABELS, USER_TYPE_VALUES } from '../types'
+
+const USER_TYPE_OPTIONS: UserType[] = USER_TYPE_VALUES
+
+function shopifyLifecycle(value: string | null | undefined): string {
+  switch (value) {
+    case 'ACTIVE':
+    case 'TRIAL':
+    case 'FROZEN':
+    case 'CANCELED':
+    case 'CANCELLATION_SCHEDULED':
+      return value
+    default:
+      return 'NONE'
+  }
+}
+
+function recastStatusForUserType(customer: CrmCustomer, userType: UserType): ClientStatus {
+  if (userType === 'agency_client') return 'agency_client'
+  if (customer.client_status !== 'agency_client') return customer.client_status
+
+  const revenue = Number(customer.total_revenue_override ?? customer.calculated_total_revenue ?? 0)
+  if (customer.billing_channel === 'stripe') {
+    const live =
+      customer.stripe_subscription_status === 'active' || customer.stripe_subscription_status === 'past_due'
+    if (live && revenue > 0) return 'active_customer'
+    if (live) return 'in_trial'
+    if (customer.stripe_subscription_status === 'trialing') return 'in_trial'
+    if (customer.cancellation_date || customer.stripe_canceled_at || customer.stripe_subscription_status === 'canceled') {
+      return 'canceled'
+    }
+    if (revenue > 0) return 'active_customer'
+    return 'prospect'
+  }
+
+  if (customer.billing_channel === 'shopify') {
+    const lifecycle = shopifyLifecycle(customer.shopify_subscription_status)
+    if (lifecycle === 'FROZEN' || lifecycle === 'CANCELED' || lifecycle === 'CANCELLATION_SCHEDULED') return 'canceled'
+    if (lifecycle === 'ACTIVE' || lifecycle === 'TRIAL') return revenue > 0 ? 'active_customer' : 'in_trial'
+    if (revenue > 0) return 'canceled'
+    return 'prospect'
+  }
+
+  if (revenue > 0) return customer.cancellation_date ? 'canceled' : 'active_customer'
+  return 'prospect'
+}
 
 interface BulkActionsProps {
   selectedIds: Set<string>
@@ -18,6 +64,8 @@ export default function BulkActions({
 }: BulkActionsProps) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [typeMenuOpen, setTypeMenuOpen] = useState(false)
+  const [updatingType, setUpdatingType] = useState(false)
 
   const selectedCustomers = customers.filter((c) => selectedIds.has(c.id))
   const count = selectedIds.size
@@ -80,6 +128,48 @@ export default function BulkActions({
     navigator.clipboard.writeText(emails)
   }
 
+  async function handleSetUserType(userType: UserType) {
+    setTypeMenuOpen(false)
+    setUpdatingType(true)
+    try {
+      const groups = new Map<string, { patch: Record<string, unknown>; ids: string[] }>()
+      for (const customer of selectedCustomers) {
+        const nextStatus = recastStatusForUserType(customer, userType)
+        const patch: Record<string, unknown> = {
+          user_type: userType,
+          updated_by: 'crm_manual',
+        }
+        if (nextStatus !== customer.client_status) patch.client_status = nextStatus
+        const key = JSON.stringify(patch)
+        const group = groups.get(key) ?? { patch, ids: [] }
+        group.ids.push(customer.id)
+        groups.set(key, group)
+      }
+
+      if (groups.size === 0) {
+        const patch: Record<string, unknown> = { user_type: userType, updated_by: 'crm_manual' }
+        if (userType === 'agency_client') patch.client_status = 'agency_client'
+        const { error } = await supabase.from('crm_customers').update(patch).in('id', Array.from(selectedIds))
+        if (error) {
+          alert(`Update failed: ${error.message}`)
+          return
+        }
+      } else {
+        for (const group of groups.values()) {
+          const { error } = await supabase.from('crm_customers').update(group.patch).in('id', group.ids)
+          if (error) {
+            alert(`Update failed: ${error.message}`)
+            return
+          }
+        }
+      }
+
+      onRefresh()
+    } finally {
+      setUpdatingType(false)
+    }
+  }
+
   if (count === 0) return null
 
   return (
@@ -87,6 +177,35 @@ export default function BulkActions({
       <div className="flex items-center gap-2 bg-primary/5 border border-primary/20 rounded-lg px-4 py-2">
         <span className="text-sm font-medium text-primary">{count} selected</span>
         <div className="h-4 w-px bg-primary/20" />
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setTypeMenuOpen((v) => !v)}
+            disabled={updatingType}
+            className="flex items-center gap-1 text-sm text-gray-600 hover:text-primary disabled:opacity-50 transition-colors"
+          >
+            <Users size={14} />
+            {updatingType ? 'Updating…' : 'Set user type'}
+            <ChevronDown size={14} />
+          </button>
+          {typeMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setTypeMenuOpen(false)} />
+              <div className="absolute left-0 top-full mt-1 z-40 w-44 bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+                {USER_TYPE_OPTIONS.map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className="w-full px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-50"
+                    onClick={() => handleSetUserType(value)}
+                  >
+                    {USER_TYPE_LABELS[value]}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
         <button
           onClick={handleCopyEmails}
           className="text-sm text-gray-600 hover:text-primary transition-colors"

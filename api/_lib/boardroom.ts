@@ -18,7 +18,7 @@ export interface BoardroomUser {
   email: string
   storeUrl?: string
   signupDate?: string
-  userType?: 'agency' | 'agency_client' | 'standard'
+  userType?: 'agency' | 'agency_client' | 'standard' | 'custom'
   agencyParentId?: string
   subscriptionId?: string
   subscriptionStatus?: string
