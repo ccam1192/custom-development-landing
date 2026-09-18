@@ -4,15 +4,22 @@
  * Centralized server-side logic for determining the CRM client status
  * based on Boardroom, Stripe, and Shopify data.
  *
- * Status hierarchy:
- *   Agency Client  — always takes precedence if user_type is agency_client
- *   Active Customer — at least one successful payment
- *   In Trial        — active trial, no payments yet
- *   Canceled        — subscription canceled
- *   Prospect        — signed up but no payment info / no trial
+ * Invariants:
+ *   Revenue > 0 → never Prospect
+ *   Shopify + Revenue = 0 + active/unfrozen → In Trial (never Active Customer)
+ *   Shopify frozen → Canceled
+ *   Stripe billing channel → Stripe remains authoritative
  */
 
-type ClientStatus = 'prospect' | 'in_trial' | 'active_customer' | 'canceled' | 'agency_client'
+export type ClientStatus = 'prospect' | 'in_trial' | 'active_customer' | 'canceled' | 'agency_client'
+
+export type ShopifyLifecycleState =
+  | 'ACTIVE'
+  | 'TRIAL'
+  | 'FROZEN'
+  | 'CANCELED'
+  | 'CANCELLATION_SCHEDULED'
+  | 'NONE'
 
 interface StatusInput {
   userType?: string | null
@@ -26,7 +33,6 @@ interface StatusInput {
 }
 
 export function determineClientStatus(input: StatusInput): ClientStatus {
-  // Agency clients always get their own status
   if (input.userType === 'agency_client') {
     return 'agency_client'
   }
@@ -34,18 +40,11 @@ export function determineClientStatus(input: StatusInput): ClientStatus {
   const subStatus = input.stripeSubscriptionStatus ?? input.boardroomSubscriptionStatus ?? null
   const isSubActive = subStatus === 'active' || subStatus === 'past_due'
   const isSubTrialing = subStatus === 'trialing' || input.boardroomSubscriptionStatus === 'trial'
+  const paid = input.hasSuccessfulPayment || input.hasShopifyRevenue
 
-  // Active subscription + paid → Active Customer
-  if (isSubActive && (input.hasSuccessfulPayment || input.hasShopifyRevenue)) {
-    return 'active_customer'
-  }
+  if (isSubActive && paid) return 'active_customer'
+  if (isSubActive && !paid) return 'in_trial'
 
-  // Active subscription but no payment yet → In Trial (free period / grace)
-  if (isSubActive && !input.hasSuccessfulPayment && !input.hasShopifyRevenue) {
-    return 'in_trial'
-  }
-
-  // Trialing subscription
   if (isSubTrialing) {
     if (input.stripeTrialEnd) {
       const trialEnd = new Date(input.stripeTrialEnd)
@@ -55,35 +54,69 @@ export function determineClientStatus(input: StatusInput): ClientStatus {
     }
   }
 
-  // Has paid but subscription is canceled or missing → was a paying customer, now canceled
-  if (input.hasSuccessfulPayment || input.hasShopifyRevenue) {
-    const isCanceled =
-      subStatus === 'canceled' ||
-      !!input.stripeCanceledAt
+  if (paid) {
+    const isCanceled = subStatus === 'canceled' || !!input.stripeCanceledAt
     if (isCanceled) return 'canceled'
-    // Paid but no current subscription (e.g. one-off invoices) → active
     return 'active_customer'
   }
 
-  // Subscription is explicitly canceled, never paid → canceled
   if (subStatus === 'canceled' || !!input.stripeCanceledAt) {
     return 'canceled'
   }
 
-  // Default: prospect
   return 'prospect'
 }
 
+export interface ResolveClientStatusInput {
+  userType?: string | null
+  billingChannel?: string | null
+  stripeSubscriptionStatus?: string | null
+  stripeTrialEnd?: string | null
+  stripeCanceledAt?: string | null
+  boardroomSubscriptionStatus?: string | null
+  shopifyLifecycle?: ShopifyLifecycleState | null
+  confirmedRevenue: number
+  hasSuccessfulStripePayment?: boolean
+}
+
 /**
- * Calculate MRR for a customer based on their subscription data.
+ * Single status resolver for Shopify and Stripe CRM rows.
+ * Shopify freeze/unfreeze and revenue invariants live here.
  */
-export type ShopifyLifecycleState =
-  | 'ACTIVE'
-  | 'TRIAL'
-  | 'FROZEN'
-  | 'CANCELED'
-  | 'CANCELLATION_SCHEDULED'
-  | 'NONE'
+export function resolveClientStatus(input: ResolveClientStatusInput): ClientStatus {
+  if (input.userType === 'agency_client') return 'agency_client'
+
+  if (input.billingChannel === 'stripe') {
+    return determineClientStatus({
+      userType: input.userType,
+      stripeSubscriptionStatus: input.stripeSubscriptionStatus,
+      stripeTrialEnd: input.stripeTrialEnd,
+      stripeCanceledAt: input.stripeCanceledAt,
+      boardroomSubscriptionStatus: input.boardroomSubscriptionStatus,
+      billingChannel: 'stripe',
+      hasSuccessfulPayment: input.hasSuccessfulStripePayment ?? input.confirmedRevenue > 0,
+      hasShopifyRevenue: false,
+    })
+  }
+
+  const paid = input.confirmedRevenue > 0
+  const lifecycle = input.shopifyLifecycle ?? 'NONE'
+
+  // Frozen Shopify subscriptions are suspended (non-paying / closed store).
+  if (lifecycle === 'FROZEN') return 'canceled'
+
+  if (lifecycle === 'ACTIVE' || lifecycle === 'TRIAL') {
+    return paid ? 'active_customer' : 'in_trial'
+  }
+
+  if (lifecycle === 'CANCELED' || lifecycle === 'CANCELLATION_SCHEDULED') {
+    return 'canceled'
+  }
+
+  // No current managed-pricing subscription
+  if (paid) return 'canceled'
+  return 'prospect'
+}
 
 export function determineShopifyClientStatus(input: {
   previousCrmStatus?: ClientStatus | null
@@ -91,27 +124,12 @@ export function determineShopifyClientStatus(input: {
   lifecycle: ShopifyLifecycleState
   hasConfirmedPayment: boolean
 }): ClientStatus {
-  if (input.userType === 'agency_client') return 'agency_client'
-
-  if (input.lifecycle === 'FROZEN') {
-    if (input.previousCrmStatus === 'active_customer' || input.hasConfirmedPayment) {
-      return 'active_customer'
-    }
-    if (input.previousCrmStatus === 'in_trial') return 'in_trial'
-    return 'in_trial'
-  }
-
-  if (input.lifecycle === 'CANCELED' || input.lifecycle === 'CANCELLATION_SCHEDULED') {
-    return 'canceled'
-  }
-
-  if (input.lifecycle === 'ACTIVE' || input.lifecycle === 'TRIAL') {
-    return input.hasConfirmedPayment ? 'active_customer' : 'in_trial'
-  }
-
-  // No current managed-pricing subscription
-  if (input.hasConfirmedPayment) return 'canceled'
-  return 'prospect'
+  return resolveClientStatus({
+    userType: input.userType,
+    billingChannel: 'shopify',
+    shopifyLifecycle: input.lifecycle,
+    confirmedRevenue: input.hasConfirmedPayment ? 1 : 0,
+  })
 }
 
 export function shopifyFlatRateMrr(input: {
@@ -119,8 +137,15 @@ export function shopifyFlatRateMrr(input: {
   billingPeriod?: string | null
   flatRateAmount?: number | null
 }): number {
-  if (input.lifecycle === 'CANCELED' || input.lifecycle === 'CANCELLATION_SCHEDULED') return 0
-  if (input.lifecycle === 'TRIAL' || input.lifecycle === 'NONE') return 0
+  if (
+    input.lifecycle === 'CANCELED' ||
+    input.lifecycle === 'CANCELLATION_SCHEDULED' ||
+    input.lifecycle === 'FROZEN' ||
+    input.lifecycle === 'TRIAL' ||
+    input.lifecycle === 'NONE'
+  ) {
+    return 0
+  }
   if (!input.flatRateAmount || input.flatRateAmount <= 0) return 0
   if (input.billingPeriod === 'ANNUAL') return input.flatRateAmount / 12
   if (input.billingPeriod === 'EVERY_30_DAYS') return input.flatRateAmount
@@ -133,22 +158,89 @@ export function calculateMrr(input: {
   stripePlanAmount?: number | null
   billingChannel?: string | null
 }): number {
-  // Canceled = $0 MRR
   if (input.clientStatus === 'canceled') return 0
-
-  // In trial = $0 MRR
   if (input.clientStatus === 'in_trial') return 0
-
-  // Prospect = $0 MRR
   if (input.clientStatus === 'prospect') return 0
-
-  // Agency client = $0 unless explicitly overridden elsewhere
   if (input.clientStatus === 'agency_client') return 0
-
-  // Use actual plan amount from Stripe if available
   if (input.stripePlanAmount && input.stripePlanAmount > 0) {
-    return input.stripePlanAmount / 100 // Stripe amounts are in cents
+    return input.stripePlanAmount / 100
   }
-
   return 0
+}
+
+export interface StatusScenario {
+  id: string
+  name: string
+  input: ResolveClientStatusInput
+  expected: ClientStatus
+}
+
+export const STATUS_SCENARIOS: StatusScenario[] = [
+  {
+    id: 'A',
+    name: 'Shopify-only trial, revenue = 0',
+    input: { billingChannel: 'shopify', shopifyLifecycle: 'TRIAL', confirmedRevenue: 0 },
+    expected: 'in_trial',
+  },
+  {
+    id: 'B',
+    name: 'Shopify-only paying customer',
+    input: { billingChannel: 'shopify', shopifyLifecycle: 'ACTIVE', confirmedRevenue: 125 },
+    expected: 'active_customer',
+  },
+  {
+    id: 'C',
+    name: 'Shopify frozen unpaid',
+    input: { billingChannel: 'shopify', shopifyLifecycle: 'FROZEN', confirmedRevenue: 0 },
+    expected: 'canceled',
+  },
+  {
+    id: 'D',
+    name: 'Shopify frozen previously paying',
+    input: { billingChannel: 'shopify', shopifyLifecycle: 'FROZEN', confirmedRevenue: 200 },
+    expected: 'canceled',
+  },
+  {
+    id: 'E',
+    name: 'Shopify unfrozen unpaid (active subscription)',
+    input: { billingChannel: 'shopify', shopifyLifecycle: 'ACTIVE', confirmedRevenue: 0 },
+    expected: 'in_trial',
+  },
+  {
+    id: 'F',
+    name: 'Shopify unfrozen paying',
+    input: { billingChannel: 'shopify', shopifyLifecycle: 'ACTIVE', confirmedRevenue: 125 },
+    expected: 'active_customer',
+  },
+  {
+    id: 'G',
+    name: 'Canceled paying customer',
+    input: { billingChannel: 'shopify', shopifyLifecycle: 'CANCELED', confirmedRevenue: 50 },
+    expected: 'canceled',
+  },
+  {
+    id: 'H',
+    name: 'Spreadsheet Prospect but actually paid and inactive',
+    input: { billingChannel: 'shopify', shopifyLifecycle: 'CANCELED', confirmedRevenue: 80 },
+    expected: 'canceled',
+  },
+  {
+    id: 'I',
+    name: 'Stripe customer is not flipped by Shopify lifecycle',
+    input: {
+      billingChannel: 'stripe',
+      shopifyLifecycle: 'FROZEN',
+      confirmedRevenue: 300,
+      hasSuccessfulStripePayment: true,
+      stripeSubscriptionStatus: 'active',
+    },
+    expected: 'active_customer',
+  },
+]
+
+export function runStatusScenarios(): Array<{ id: string; name: string; expected: ClientStatus; actual: ClientStatus; pass: boolean }> {
+  return STATUS_SCENARIOS.map((s) => {
+    const actual = resolveClientStatus(s.input)
+    return { id: s.id, name: s.name, expected: s.expected, actual, pass: actual === s.expected }
+  })
 }

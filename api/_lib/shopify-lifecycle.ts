@@ -6,7 +6,7 @@
 import { supabaseAdmin, fetchAllRows } from './supabase-admin.js'
 import { shopGidNumeric, type ShopifyActiveSubscription, type ShopifyPartnerEvent } from './shopify.js'
 import {
-  determineShopifyClientStatus,
+  resolveClientStatus,
   shopifyFlatRateMrr,
   type ShopifyLifecycleState,
 } from './status-engine.js'
@@ -30,6 +30,8 @@ export type CrmShopifyCustomer = {
   cancellation_date: string | null
   name: string | null
   email: string | null
+  stripe_customer_id?: string | null
+  calculated_total_revenue?: number | null
 }
 
 export type ShopifyShopRef = {
@@ -50,15 +52,40 @@ export type DerivedShopifyLifecycle = {
   flatRateAmount: number | null
   subscriptionId: string | null
   pendingUpdate: ShopifyActiveSubscription['pendingUpdate']
+  freezeOccurredAt: string | null
+  unfrozenOccurredAt: string | null
 }
 
 const CUSTOMER_COLUMNS =
-  'id, billing_channel, client_status, user_type, shopify_shop_id, shopify_shop_domain, shopify_subscription_id, shopify_subscription_created_at, shopify_trial_ends_at, shopify_cancelled_at, shopify_cancel_effective_on, store_url, mrr_override, cancellation_date, name, email'
+  'id, billing_channel, client_status, user_type, shopify_shop_id, shopify_shop_domain, shopify_subscription_id, shopify_subscription_created_at, shopify_trial_ends_at, shopify_cancelled_at, shopify_cancel_effective_on, store_url, mrr_override, cancellation_date, name, email, stripe_customer_id, calculated_total_revenue'
 
 export function normalizeShopDomain(value: string | null | undefined): string | null {
   if (!value) return null
-  const host = String(value).trim().replace(/^https?:\/\//i, '').split('/')[0].toLowerCase()
+  let host = String(value).trim().toLowerCase()
+  host = host.replace(/^https?:\/\//, '')
+  host = host.split('/')[0] ?? ''
+  host = host.split('?')[0] ?? ''
+  host = host.split('#')[0] ?? ''
+  host = host.replace(/:\d+$/, '')
+  host = host.replace(/\.+$/, '').replace(/^\.+/, '')
   return host || null
+}
+
+export function myshopifyDomainFromUnknown(value: string | null | undefined): string | null {
+  const host = normalizeShopDomain(value)
+  if (!host) return null
+  return host.endsWith('.myshopify.com') ? host : null
+}
+
+export function myshopifyDomainFromMetadata(
+  metadata: Record<string, string> | null | undefined
+): string | null {
+  if (!metadata) return null
+  for (const key of ['shopify_domain', 'shop_domain', 'myshopify_domain', 'store_url', 'shop']) {
+    const host = myshopifyDomainFromUnknown(metadata[key])
+    if (host) return host
+  }
+  return null
 }
 
 export function isStripeAuthoritative(billingChannel: string | null | undefined): boolean {
@@ -74,24 +101,92 @@ export class ShopifyCustomerIndex {
   bySubId = new Map<string, CrmShopifyCustomer>()
   byDomain = new Map<string, CrmShopifyCustomer>()
   byId = new Map<string, CrmShopifyCustomer>()
+  byEmail = new Map<string, CrmShopifyCustomer[]>()
 
   add(customer: CrmShopifyCustomer) {
     this.byId.set(customer.id, customer)
     const shopId = shopGidNumeric(customer.shopify_shop_id)
-    if (shopId) this.byShopId.set(shopId, customer)
+    if (shopId) {
+      const existing = this.byShopId.get(shopId)
+      if (!existing || preferCanonical(customer, existing)) this.byShopId.set(shopId, customer)
+    }
     if (customer.shopify_subscription_id) this.bySubId.set(customer.shopify_subscription_id, customer)
-    const domain = normalizeShopDomain(customer.shopify_shop_domain) ?? normalizeShopDomain(customer.store_url)
-    if (domain) this.byDomain.set(domain, customer)
+    const domain =
+      normalizeShopDomain(customer.shopify_shop_domain) ?? normalizeShopDomain(customer.store_url)
+    if (domain) {
+      const existing = this.byDomain.get(domain)
+      if (!existing || preferCanonical(customer, existing)) this.byDomain.set(domain, customer)
+    }
+    const email = customer.email?.toLowerCase().trim()
+    if (email) {
+      const list = this.byEmail.get(email) ?? []
+      if (!list.some((c) => c.id === customer.id)) list.push(customer)
+      this.byEmail.set(email, list)
+    }
   }
 
-  find(shopId?: string | null, subscriptionId?: string | null, domain?: string | null): CrmShopifyCustomer | null {
+  find(
+    shopId?: string | null,
+    subscriptionId?: string | null,
+    domain?: string | null,
+    email?: string | null
+  ): CrmShopifyCustomer | null {
     const numeric = shopGidNumeric(shopId)
     if (numeric && this.byShopId.has(numeric)) return this.byShopId.get(numeric) ?? null
-    if (subscriptionId && this.bySubId.has(subscriptionId)) return this.bySubId.get(subscriptionId) ?? null
     const host = normalizeShopDomain(domain)
     if (host && this.byDomain.has(host)) return this.byDomain.get(host) ?? null
+    if (subscriptionId && this.bySubId.has(subscriptionId)) return this.bySubId.get(subscriptionId) ?? null
+
+    if (email) {
+      const matches = this.byEmail.get(email.toLowerCase().trim()) ?? []
+      const conflicts = matches.filter((c) => {
+        const other =
+          normalizeShopDomain(c.shopify_shop_domain) ?? normalizeShopDomain(c.store_url)
+        return !!host && !!other && other !== host
+      })
+      for (const c of conflicts) {
+        const other =
+          normalizeShopDomain(c.shopify_shop_domain) ?? normalizeShopDomain(c.store_url)
+        console.log(
+          `[Shopify Sync] Email match conflict: ${email} shop=${host} existing_store=${other} customer=${c.id} — not merging`
+        )
+      }
+      const compatible = matches.filter((c) => {
+        const other =
+          normalizeShopDomain(c.shopify_shop_domain) ?? normalizeShopDomain(c.store_url)
+        return !other || !host || other === host
+      })
+      if (compatible.length === 1) {
+        console.log(
+          `[Shopify Sync] Shopify shop matched existing CRM customer ${compatible[0].id} by email fallback`
+        )
+        return compatible[0]
+      }
+      if (compatible.length > 1) {
+        console.log(
+          `[Shopify Sync] Ambiguous email fallback for ${email}; not merging ${compatible.length} records`
+        )
+      }
+    }
     return null
   }
+
+  emailConflicts(email: string | null | undefined, domain: string | null): CrmShopifyCustomer[] {
+    if (!email) return []
+    const host = normalizeShopDomain(domain)
+    const matches = this.byEmail.get(email.toLowerCase().trim()) ?? []
+    return matches.filter((c) => {
+      const other =
+        normalizeShopDomain(c.shopify_shop_domain) ?? normalizeShopDomain(c.store_url)
+      return !!host && !!other && other !== host
+    })
+  }
+}
+
+function preferCanonical(candidate: CrmShopifyCustomer, existing: CrmShopifyCustomer): boolean {
+  if (existing.billing_channel === 'stripe' && candidate.billing_channel !== 'stripe') return false
+  if (candidate.billing_channel === 'stripe' && existing.billing_channel !== 'stripe') return true
+  return false
 }
 
 export async function loadShopifyCustomerIndex(): Promise<ShopifyCustomerIndex> {
@@ -217,6 +312,18 @@ export function deriveShopifyLifecycle(input: {
   const lastFrozenIdx = lastIndex(subscriptionEvents, (e) => e.eventType === 'SUBSCRIPTION_FROZEN' || e.state === 'FROZEN')
   const lastUnfrozenIdx = lastIndex(subscriptionEvents, (e) => e.eventType === 'SUBSCRIPTION_UNFROZEN' || e.state === 'UNFROZEN')
   const isFrozen = lastFrozenIdx >= 0 && lastFrozenIdx > lastUnfrozenIdx
+  const freezeOccurredAt = lastFrozenIdx >= 0 ? subscriptionEvents[lastFrozenIdx].occurredAt : null
+  const unfrozenOccurredAt = lastUnfrozenIdx >= 0 ? subscriptionEvents[lastUnfrozenIdx].occurredAt : null
+
+  const lastDeactivatedIdx = lastIndex(
+    events,
+    (e) => e.eventType === 'RELATIONSHIP_DEACTIVATED' || e.eventType === 'RELATIONSHIP_UNINSTALLED'
+  )
+  const lastReactivatedIdx = lastIndex(
+    events,
+    (e) => e.eventType === 'RELATIONSHIP_REACTIVATED' || e.eventType === 'RELATIONSHIP_INSTALLED'
+  )
+  const isDeactivated = lastDeactivatedIdx >= 0 && lastDeactivatedIdx > lastReactivatedIdx
 
   const activeSub = input.activeSub
   const inTrial = !!(
@@ -240,7 +347,7 @@ export function deriveShopifyLifecycle(input: {
     latest?.state === 'CANCELLATION_SCHEDULED'
   ) {
     lifecycle = 'CANCELLATION_SCHEDULED'
-  } else if (subscriptionEvents.length > 0) {
+  } else if (subscriptionEvents.length > 0 || isDeactivated) {
     lifecycle = 'CANCELED'
   }
 
@@ -262,6 +369,8 @@ export function deriveShopifyLifecycle(input: {
     flatRateAmount: flatRateAmountFromItems(activeSub?.items),
     subscriptionId: activeSub?.legacySubscriptionId ?? null,
     pendingUpdate: activeSub?.pendingUpdate ?? null,
+    freezeOccurredAt,
+    unfrozenOccurredAt,
   }
 }
 
@@ -295,6 +404,39 @@ export function toSubscriptionEventRow(
   }
 }
 
+async function lookupExistingShopifyCustomer(shop: ShopifyShopRef): Promise<CrmShopifyCustomer | null> {
+  const numeric = shopGidNumeric(shop.shopId)
+  if (numeric) {
+    const { data } = await supabaseAdmin
+      .from('crm_customers')
+      .select(CUSTOMER_COLUMNS)
+      .eq('shopify_shop_id', numeric)
+      .limit(5)
+    const rows = (data ?? []) as CrmShopifyCustomer[]
+    if (rows.length) {
+      return rows.reduce((best, row) => (preferCanonical(row, best) ? row : best))
+    }
+  }
+
+  const host = normalizeShopDomain(shop.domain)
+  if (!host || !/^[a-z0-9.-]+$/.test(host)) return null
+
+  const { data } = await supabaseAdmin
+    .from('crm_customers')
+    .select(CUSTOMER_COLUMNS)
+    .or(
+      `shopify_shop_domain.eq.${host},shopify_shop_domain.eq.https://${host},store_url.eq.https://${host},store_url.eq.${host},store_url.eq.https://${host}/`
+    )
+    .limit(20)
+
+  const matches = ((data ?? []) as CrmShopifyCustomer[]).filter((row) => {
+    const other = normalizeShopDomain(row.shopify_shop_domain) ?? normalizeShopDomain(row.store_url)
+    return other === host
+  })
+  if (!matches.length) return null
+  return matches.reduce((best, row) => (preferCanonical(row, best) ? row : best))
+}
+
 export async function findOrCreateShopifyCustomer(
   index: ShopifyCustomerIndex,
   shop: ShopifyShopRef,
@@ -309,8 +451,24 @@ export async function findOrCreateShopifyCustomer(
     }
   }
 
-  const existing = index.find(shop.shopId, subscriptionId, shop.domain)
+  const existing =
+    index.find(shop.shopId, subscriptionId, shop.domain) ?? (await lookupExistingShopifyCustomer(shop))
   if (existing) {
+    index.add(existing)
+    const matchBy =
+      shopGidNumeric(existing.shopify_shop_id) && shopGidNumeric(existing.shopify_shop_id) === shopGidNumeric(shop.shopId)
+        ? 'shop id'
+        : 'store URL'
+    if (isStripeAuthoritative(existing.billing_channel)) {
+      console.log(
+        `[Shopify Sync] Existing Stripe billing record found (${existing.id}) for ${shop.domain ?? shop.shopId}; matching by ${matchBy}`
+      )
+    } else {
+      console.log(
+        `[Shopify Sync] Shopify shop matched existing CRM customer ${existing.id} by ${matchBy}`
+      )
+    }
+
     const patch: Record<string, unknown> = {}
     if (shop.shopId && !existing.shopify_shop_id) patch.shopify_shop_id = shop.shopId
     if (shop.domain && !existing.shopify_shop_domain) patch.shopify_shop_domain = shop.domain
@@ -358,20 +516,14 @@ export async function findOrCreateShopifyCustomer(
     .single()
 
   if (error) {
-    if (shop.shopId) {
-      const { data: raced } = await supabaseAdmin
-        .from('crm_customers')
-        .select(CUSTOMER_COLUMNS)
-        .eq('shopify_shop_id', shop.shopId)
-        .maybeSingle()
-      if (raced) {
-        index.add(raced as CrmShopifyCustomer)
-        return {
-          customer: raced as CrmShopifyCustomer,
-          created: false,
-          skippedStripe: isStripeAuthoritative(raced.billing_channel),
-          skippedMissing: false,
-        }
+    const raced = await lookupExistingShopifyCustomer(shop)
+    if (raced) {
+      index.add(raced)
+      return {
+        customer: raced,
+        created: false,
+        skippedStripe: isStripeAuthoritative(raced.billing_channel),
+        skippedMissing: false,
       }
     }
     throw new Error(`Create Shopify customer failed: ${error.message}`)
@@ -387,21 +539,52 @@ export function shopifyCustomerUpdateFromLifecycle(input: {
   shop: ShopifyShopRef
   derived: DerivedShopifyLifecycle
   hasConfirmedPayment: boolean
-}): { record: Record<string, unknown>; nextStatus: string } | null {
-  if (isStripeAuthoritative(input.customer.billing_channel)) return null
+}): { record: Record<string, unknown>; nextStatus: string | null; stripePreserved: boolean } {
+  const metadata: Record<string, unknown> = {
+    shopify_shop_id: input.shop.shopId || input.customer.shopify_shop_id,
+    shopify_shop_domain: input.shop.domain ?? input.customer.shopify_shop_domain,
+    shopify_subscription_id: input.derived.subscriptionId ?? input.customer.shopify_subscription_id,
+    shopify_subscription_status: input.derived.shopifyStatus,
+    shopify_subscription_created_at:
+      input.derived.subscriptionCreatedAt ?? input.customer.shopify_subscription_created_at,
+    shopify_trial_ends_at: input.derived.trialEndsAt ?? input.customer.shopify_trial_ends_at,
+    shopify_cancelled_at: input.derived.cancelledAt ?? input.customer.shopify_cancelled_at,
+    shopify_cancel_effective_on:
+      input.derived.cancelEffectiveOn ?? input.customer.shopify_cancel_effective_on,
+    shopify_billing_interval: input.derived.billingInterval,
+    shopify_subscription_amount: input.derived.flatRateAmount,
+    shopify_cancel_at_end_of_cycle: input.derived.cancelAtEndOfCycle,
+    shopify_pending_update: input.derived.pendingUpdate,
+    shopify_last_status_sync_at: new Date().toISOString(),
+    last_synced_at: new Date().toISOString(),
+    ...(input.shop.name && !input.customer.name ? { name: input.shop.name } : {}),
+    ...(input.shop.domain && !input.customer.store_url ? { store_url: `https://${input.shop.domain}` } : {}),
+  }
 
-  const nextStatus = determineShopifyClientStatus({
-    previousCrmStatus: (input.customer.client_status as CrmShopifyCustomer['client_status']) as
-      | 'prospect'
-      | 'in_trial'
-      | 'active_customer'
-      | 'canceled'
-      | 'agency_client'
-      | null,
+  if (isStripeAuthoritative(input.customer.billing_channel)) {
+    console.log(`[Shopify Sync] Preserving Stripe billing authority for ${input.customer.id}`)
+    return { record: metadata, nextStatus: null, stripePreserved: true }
+  }
+
+  const confirmedRevenue = input.hasConfirmedPayment ? 1 : 0
+  const nextStatus = resolveClientStatus({
     userType: input.customer.user_type,
-    lifecycle: input.derived.lifecycle,
-    hasConfirmedPayment: input.hasConfirmedPayment,
+    billingChannel: 'shopify',
+    shopifyLifecycle: input.derived.lifecycle,
+    confirmedRevenue,
   })
+
+  if (input.derived.lifecycle === 'FROZEN') {
+    console.log(
+      `[Shopify Sync] Shopify subscription frozen shop=${input.shop.shopId || input.shop.domain} historical_paid=${input.hasConfirmedPayment}`
+    )
+    console.log('[Shopify Sync] Setting client_status=Canceled')
+  } else if (input.derived.unfrozenOccurredAt && input.derived.lifecycle !== 'FROZEN') {
+    console.log(
+      `[Shopify Sync] Shopify subscription unfrozen shop=${input.shop.shopId || input.shop.domain} Historical revenue=${input.hasConfirmedPayment ? '>0' : '$0'}`
+    )
+    console.log(`[Shopify Sync] Setting client_status=${nextStatus}`)
+  }
 
   const calculatedMrr = shopifyFlatRateMrr({
     lifecycle: input.derived.lifecycle,
@@ -411,36 +594,25 @@ export function shopifyCustomerUpdateFromLifecycle(input: {
 
   const cancellationDate =
     nextStatus === 'canceled'
-      ? input.derived.cancelEffectiveOn ?? input.derived.cancelledAt ?? input.customer.cancellation_date
+      ? input.derived.lifecycle === 'FROZEN'
+        ? input.derived.freezeOccurredAt ?? input.derived.cancelledAt ?? input.customer.cancellation_date
+        : input.derived.cancelEffectiveOn ??
+          input.derived.cancelledAt ??
+          input.derived.freezeOccurredAt ??
+          input.customer.cancellation_date
       : nextStatus === 'active_customer' || nextStatus === 'in_trial'
         ? null
         : input.customer.cancellation_date
 
   return {
     nextStatus,
+    stripePreserved: false,
     record: {
-      shopify_shop_id: input.shop.shopId || input.customer.shopify_shop_id,
-      shopify_shop_domain: input.shop.domain ?? input.customer.shopify_shop_domain,
-      shopify_subscription_id: input.derived.subscriptionId ?? input.customer.shopify_subscription_id,
-      shopify_subscription_status: input.derived.shopifyStatus,
-      shopify_subscription_created_at:
-        input.derived.subscriptionCreatedAt ?? input.customer.shopify_subscription_created_at,
-      shopify_trial_ends_at: input.derived.trialEndsAt ?? input.customer.shopify_trial_ends_at,
-      shopify_cancelled_at: input.derived.cancelledAt ?? input.customer.shopify_cancelled_at,
-      shopify_cancel_effective_on:
-        input.derived.cancelEffectiveOn ?? input.customer.shopify_cancel_effective_on,
-      shopify_billing_interval: input.derived.billingInterval,
-      shopify_subscription_amount: input.derived.flatRateAmount,
-      shopify_cancel_at_end_of_cycle: input.derived.cancelAtEndOfCycle,
-      shopify_pending_update: input.derived.pendingUpdate,
-      shopify_last_status_sync_at: new Date().toISOString(),
+      ...metadata,
       billing_channel: 'shopify',
       client_status: nextStatus,
       calculated_mrr: calculatedMrr,
       cancellation_date: cancellationDate,
-      last_synced_at: new Date().toISOString(),
-      ...(input.shop.name && !input.customer.name ? { name: input.shop.name } : {}),
-      ...(input.shop.domain && !input.customer.store_url ? { store_url: `https://${input.shop.domain}` } : {}),
     },
   }
 }

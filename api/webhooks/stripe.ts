@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node'
 import { supabaseAdmin } from '../_lib/supabase-admin.js'
 import { constructWebhookEvent, isStripeConfigured, getStripe } from '../_lib/stripe.js'
 import { determineClientStatus, calculateMrr } from '../_lib/status-engine.js'
+import { myshopifyDomainFromMetadata } from '../_lib/shopify-lifecycle.js'
 import type Stripe from 'stripe'
 
 /**
@@ -23,6 +24,7 @@ type CrmRow = {
   email: string | null
   name: string | null
   billing_channel: string | null
+  store_url: string | null
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -88,7 +90,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 }
 
 const CRM_WEBHOOK_COLUMNS =
-  'id, user_type, boardroom_subscription_status, cancellation_date, email, name, billing_channel'
+  'id, user_type, boardroom_subscription_status, cancellation_date, email, name, billing_channel, store_url'
 
 async function findCrmByStripeId(stripeCustomerId: string): Promise<CrmRow | null> {
   const { data } = await supabaseAdmin
@@ -141,6 +143,7 @@ async function findOrCreateCrmCustomer(
 
   const email = stripeCust.email?.trim() || null
   const name = stripeCust.name?.trim() || null
+  const storeDomain = myshopifyDomainFromMetadata(stripeCust.metadata)
 
   if (email) {
     const byEmail = await findCrmByEmail(email)
@@ -153,6 +156,7 @@ async function findOrCreateCrmCustomer(
           last_synced_at: new Date().toISOString(),
           ...(isShopify ? {} : { billing_channel: 'stripe' }),
           ...(name && !byEmail.name ? { name } : {}),
+          ...(storeDomain && !byEmail.store_url ? { store_url: `https://${storeDomain}` } : {}),
         })
         .eq('id', byEmail.id)
       return { ...byEmail, name: byEmail.name ?? name, stripe_customer_id: stripeId } as CrmRow
@@ -167,6 +171,7 @@ async function findOrCreateCrmCustomer(
       stripe_customer_id: stripeId,
       email,
       name,
+      store_url: storeDomain ? `https://${storeDomain}` : null,
       billing_channel: 'stripe',
       source: 'stripe',
       client_status: 'prospect',
@@ -193,6 +198,7 @@ async function handleSubscriptionEvent(sub: Stripe.Subscription) {
     .from('crm_revenue_transactions')
     .select('*', { count: 'exact', head: true })
     .eq('crm_customer_id', customer.id)
+    .eq('provider', 'stripe')
     .eq('status', 'succeeded')
     .gt('amount', 0)
 
@@ -277,6 +283,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
       .from('crm_revenue_transactions')
       .select('amount')
       .eq('crm_customer_id', crmCustomerId)
+      .eq('provider', 'stripe')
       .eq('status', 'succeeded')
 
     const total = (txns ?? []).reduce((sum, t) => sum + t.amount, 0)

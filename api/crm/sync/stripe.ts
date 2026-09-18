@@ -3,6 +3,10 @@ import { requireAuth } from '../../_lib/auth.js'
 import { supabaseAdmin, fetchAllRows } from '../../_lib/supabase-admin.js'
 import { determineClientStatus, calculateMrr } from '../../_lib/status-engine.js'
 import {
+  myshopifyDomainFromMetadata,
+  myshopifyDomainFromUnknown,
+} from '../../_lib/shopify-lifecycle.js'
+import {
   isStripeConfigured,
   getAllStripeCustomers,
   getAllStripeSubscriptions,
@@ -59,17 +63,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       client_status: string | null
       billing_channel: string | null
       name: string | null
-    }>('crm_customers', 'id, email, stripe_customer_id, client_status, billing_channel, name')
+      store_url: string | null
+      shopify_shop_domain: string | null
+    }>(
+      'crm_customers',
+      'id, email, stripe_customer_id, client_status, billing_channel, name, store_url, shopify_shop_domain'
+    )
 
     const crmByStripeId = new Map<string, string>()
     const crmByEmail = new Map<string, string>()
+    const crmByDomain = new Map<string, string>()
     const crmStatusById = new Map<string, string>()
     const crmBillingById = new Map<string, string>()
+    const crmDomainById = new Map<string, string>()
+    const crmStoreUrlById = new Map<string, string | null>()
     for (const c of existingCrm) {
       if (c.stripe_customer_id) crmByStripeId.set(c.stripe_customer_id, c.id)
       if (c.email) crmByEmail.set(c.email.toLowerCase().trim(), c.id)
       crmStatusById.set(c.id, c.client_status ?? 'prospect')
       crmBillingById.set(c.id, c.billing_channel ?? 'none')
+      crmStoreUrlById.set(c.id, c.store_url)
+      const domain =
+        myshopifyDomainFromUnknown(c.shopify_shop_domain) ?? myshopifyDomainFromUnknown(c.store_url)
+      if (domain) {
+        crmByDomain.set(domain, c.id)
+        crmDomainById.set(c.id, domain)
+      }
     }
     console.log(`[Stripe Sync] Loaded ${existingCrm.length} existing CRM customers for matching`)
 
@@ -161,6 +180,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       name: string | null
       totalRevenue: number
       hasPayment: boolean
+      storeDomain: string | null
       sub: (typeof subscriptions)[0] | undefined
     }
 
@@ -170,6 +190,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     for (const cust of customers) {
       const email = (cust as { email?: string | null }).email ?? null
       const name = (cust as { name?: string | null }).name ?? null
+      const storeDomain = myshopifyDomainFromMetadata(
+        (cust as { metadata?: Record<string, string> | null }).metadata
+      )
       const sub = subsByCustomer.get(cust.id)
       const rev = revenueByCustomer.get(cust.id) ?? 0
       const emailKey = email?.toLowerCase() ?? null
@@ -180,6 +203,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         existing.totalRevenue += rev
         existing.hasPayment = existing.hasPayment || rev > 0
         if (!existing.name && name) existing.name = name
+        if (!existing.storeDomain && storeDomain) existing.storeDomain = storeDomain
 
         // Prefer active subscription
         if (sub) {
@@ -203,6 +227,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           name,
           totalRevenue: rev,
           hasPayment: rev > 0,
+          storeDomain,
           sub,
         }
         if (emailKey) {
@@ -264,10 +289,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           existingId = crmByStripeId.get(sid) ?? null
           if (existingId) break
         }
+        if (!existingId && merged.storeDomain) {
+          existingId = crmByDomain.get(merged.storeDomain) ?? null
+        }
         if (!existingId && merged.email) {
-          existingId = crmByEmail.get(merged.email.toLowerCase().trim()) ?? null
+          const byEmail = crmByEmail.get(merged.email.toLowerCase().trim()) ?? null
+          if (byEmail && merged.storeDomain) {
+            const existingDomain = crmDomainById.get(byEmail)
+            if (existingDomain && existingDomain !== merged.storeDomain) {
+              console.log(
+                `[Stripe Sync] Email match conflict: ${merged.email} stripe_store=${merged.storeDomain} existing_store=${existingDomain} customer=${byEmail} — not merging`
+              )
+            } else {
+              existingId = byEmail
+            }
+          } else {
+            existingId = byEmail
+          }
         }
         if (existingId === 'pending') existingId = null
+        if (merged.storeDomain && (!existingId || !crmStoreUrlById.get(existingId))) {
+          record.store_url = `https://${merged.storeDomain}`
+        }
 
         // Shopify is authoritative for Shopify-billed customers.
         if (existingId && crmBillingById.get(existingId) === 'shopify') {

@@ -637,7 +637,13 @@ async function runTransactionsPhase(
       try {
         const result = await findOrCreateShopifyCustomer(index, shop, null)
         if (result.created) cursor.stats.customersCreated++
-        rows.push(toTxnRow(tx, result.customer?.id ?? null))
+        const attachId = result.skippedStripe ? null : result.customer?.id ?? null
+        if (result.skippedStripe) {
+          console.log(
+            `[Shopify Sync] Preserving Stripe billing authority; not attaching Shopify revenue for ${shop.domain ?? shop.shopId}`
+          )
+        }
+        rows.push(toTxnRow(tx, attachId))
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e)
         errorDetails.push({ message, record: domain ?? shopId ?? undefined })
@@ -720,47 +726,50 @@ async function runLifecyclePhase(
         cursor.stats.skippedMissingIds++
       } else {
         if (result.created) cursor.stats.customersCreated++
-        if (!result.skippedStripe) {
-          const hasPayment = shopHasConfirmedPayment(paid, {
-            shopId: shop.shopId,
-            domain: shop.domain,
-            customerId: result.customer.id,
-          })
+        const hasPayment = shopHasConfirmedPayment(paid, {
+          shopId: shop.shopId,
+          domain: shop.domain,
+          customerId: result.customer.id,
+        })
 
-          const previousStatus = result.customer.client_status
-          const update = shopifyCustomerUpdateFromLifecycle({
-            customer: result.customer,
-            shop,
-            derived,
-            hasConfirmedPayment: hasPayment,
-          })
-          if (update) {
-            const { error } = await supabaseAdmin
-              .from('crm_customers')
-              .update(update.record)
-              .eq('id', result.customer.id)
-            if (error) {
-              errorDetails.push({ message: `Customer update: ${error.message}`, record: shop.shopId })
-            } else {
-              cursor.stats.customersUpdated++
-              tallyStatusMove(cursor.stats, previousStatus, update.nextStatus)
-              index.add({ ...result.customer, ...update.record } as typeof result.customer)
+        const update = shopifyCustomerUpdateFromLifecycle({
+          customer: result.customer,
+          shop,
+          derived,
+          hasConfirmedPayment: hasPayment,
+        })
+        const { error } = await supabaseAdmin
+          .from('crm_customers')
+          .update(update.record)
+          .eq('id', result.customer.id)
+        if (error) {
+          errorDetails.push({ message: `Customer update: ${error.message}`, record: shop.shopId })
+        } else {
+          if (!update.stripePreserved) {
+            cursor.stats.customersUpdated++
+            tallyStatusMove(cursor.stats, result.customer.client_status, update.nextStatus)
+            index.add({ ...result.customer, ...update.record } as typeof result.customer)
+          }
 
-              if (shop.shopId) {
-                await supabaseAdmin
-                  .from('crm_shopify_subscription_events')
-                  .update({ crm_customer_id: result.customer.id })
-                  .eq('shopify_shop_id', shop.shopId)
-                  .is('crm_customer_id', null)
+          if (shop.shopId && !update.stripePreserved) {
+            await supabaseAdmin
+              .from('crm_shopify_subscription_events')
+              .update({ crm_customer_id: result.customer.id })
+              .eq('shopify_shop_id', shop.shopId)
+              .is('crm_customer_id', null)
 
-                await supabaseAdmin
-                  .from('crm_revenue_transactions')
-                  .update({ crm_customer_id: result.customer.id })
-                  .eq('provider', 'shopify')
-                  .eq('shopify_shop_id', shop.shopId)
-                  .is('crm_customer_id', null)
-              }
-            }
+            await supabaseAdmin
+              .from('crm_revenue_transactions')
+              .update({ crm_customer_id: result.customer.id })
+              .eq('provider', 'shopify')
+              .eq('shopify_shop_id', shop.shopId)
+              .is('crm_customer_id', null)
+          } else if (shop.shopId && update.stripePreserved) {
+            await supabaseAdmin
+              .from('crm_shopify_subscription_events')
+              .update({ crm_customer_id: result.customer.id })
+              .eq('shopify_shop_id', shop.shopId)
+              .is('crm_customer_id', null)
           }
         }
       }
@@ -785,8 +794,8 @@ function uniqueCustomerIds(index: ShopifyCustomerIndex, shops: ShopifyShopRef[])
   return [...ids]
 }
 
-function tallyStatusMove(stats: ShopifySyncStats, previous: string | null, next: string) {
-  if (previous === next) return
+function tallyStatusMove(stats: ShopifySyncStats, previous: string | null, next: string | null) {
+  if (!next || previous === next) return
   if (next === 'in_trial') stats.movedToInTrial++
   if (next === 'active_customer') stats.movedToActive++
   if (next === 'canceled') stats.movedToCanceled++
@@ -801,7 +810,7 @@ function shopFromEvent(event: ShopifyPartnerEvent): ShopifyShopRef {
 }
 
 function toTxnRow(tx: ShopifyTransaction, customerId: string | null) {
-  const amount = parseFloat(tx.grossAmount?.amount ?? tx.netAmount?.amount ?? '0')
+  const raw = parseFloat(tx.grossAmount?.amount ?? tx.netAmount?.amount ?? '0')
   let txType = 'payment'
   switch (tx.__typename) {
     case 'AppUsageSale':
@@ -817,19 +826,20 @@ function toTxnRow(tx: ShopifyTransaction, customerId: string | null) {
       txType = 'app_sale_credit'
       break
   }
+  const signed = txType === 'app_sale_credit' ? -Math.abs(raw) : raw
   return {
     provider: 'shopify',
     provider_transaction_id: tx.id,
     crm_customer_id: customerId,
-    amount: Math.abs(amount),
+    amount: Math.abs(signed),
     currency: tx.grossAmount?.currencyCode ?? tx.netAmount?.currencyCode ?? 'USD',
     transaction_date: tx.createdAt,
-    status: amount >= 0 ? 'succeeded' : 'adjusted',
+    status: signed < 0 ? 'adjusted' : 'succeeded',
     transaction_type: txType,
     shopify_charge_id: tx.chargeId ?? null,
     shopify_shop_id: shopGidNumeric(tx.shop?.id),
     shopify_shop_domain: tx.shop?.myshopifyDomain ?? null,
-    shopify_gross_amount: tx.grossAmount ? parseFloat(tx.grossAmount.amount) : null,
+    shopify_gross_amount: Number.isFinite(raw) ? raw : null,
     shopify_net_amount: tx.netAmount ? parseFloat(tx.netAmount.amount) : null,
     shopify_fee: tx.shopifyFee ? parseFloat(tx.shopifyFee.amount) : null,
     description: `Shopify ${tx.__typename} for ${tx.shop?.name ?? tx.shop?.myshopifyDomain ?? 'unknown shop'}`,
@@ -848,7 +858,7 @@ async function recalcShopifyRevenue(
   for (;;) {
     let query = supabaseAdmin
       .from('crm_revenue_transactions')
-      .select('crm_customer_id, amount, transaction_type')
+      .select('crm_customer_id, amount, transaction_type, status, shopify_gross_amount')
       .eq('provider', 'shopify')
       .in('status', ['succeeded', 'adjusted'])
       .not('crm_customer_id', 'is', null)
@@ -865,10 +875,13 @@ async function recalcShopifyRevenue(
     }
     for (const t of data ?? []) {
       if (!t.crm_customer_id) continue
-      const delta =
-        t.transaction_type === 'app_sale_adjustment' || t.transaction_type === 'app_sale_credit'
-          ? -Math.abs(t.amount)
-          : t.amount
+      let delta = Number(t.amount) || 0
+      if (t.transaction_type === 'app_sale_credit') {
+        delta = -Math.abs(delta)
+      } else if (t.transaction_type === 'app_sale_adjustment') {
+        const gross = t.shopify_gross_amount == null ? null : Number(t.shopify_gross_amount)
+        delta = gross != null && Number.isFinite(gross) ? gross : t.status === 'adjusted' ? -Math.abs(delta) : delta
+      }
       shopifyByCustomer.set(t.crm_customer_id, (shopifyByCustomer.get(t.crm_customer_id) ?? 0) + delta)
     }
     if (!data || data.length < PAGE) break
@@ -878,26 +891,12 @@ async function recalcShopifyRevenue(
   const ids = customerIds ?? [...shopifyByCustomer.keys()]
   for (let i = 0; i < ids.length; i += 50) {
     const batch = ids.slice(i, i + 50)
-    const { data: stripeTxns } = await supabaseAdmin
-      .from('crm_revenue_transactions')
-      .select('crm_customer_id, amount')
-      .eq('provider', 'stripe')
-      .eq('status', 'succeeded')
-      .in('crm_customer_id', batch)
-
-    const stripeByCustomer = new Map<string, number>()
-    for (const t of stripeTxns ?? []) {
-      if (!t.crm_customer_id) continue
-      stripeByCustomer.set(t.crm_customer_id, (stripeByCustomer.get(t.crm_customer_id) ?? 0) + t.amount)
-    }
-
     await Promise.all(
       batch.map((id) =>
         supabaseAdmin
           .from('crm_customers')
           .update({
-            calculated_total_revenue:
-              (shopifyByCustomer.get(id) ?? 0) + (stripeByCustomer.get(id) ?? 0),
+            calculated_total_revenue: shopifyByCustomer.get(id) ?? 0,
           })
           .eq('id', id)
           .eq('billing_channel', 'shopify')

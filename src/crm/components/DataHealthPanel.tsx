@@ -7,6 +7,8 @@ export default function DataHealthPanel() {
   const [issues, setIssues] = useState<CrmDataHealthIssue[]>([])
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
+  const [dryRun, setDryRun] = useState<string | null>(null)
+  const [summary, setSummary] = useState<Record<string, number> | null>(null)
 
   const fetchIssues = useCallback(async () => {
     setLoading(true)
@@ -30,13 +32,16 @@ export default function DataHealthPanel() {
     setRunning(true)
     const { data: session } = await supabase.auth.getSession()
     try {
-      await fetch('/api/crm/data-health', {
+      const res = await fetch('/api/crm/data-health', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${session.session?.access_token ?? ''}`,
         },
       })
+      const json = await res.json().catch(() => null)
+      if (json?.dry_run) setDryRun(json.dry_run)
+      if (json?.summary) setSummary(json.summary)
       await fetchIssues()
     } catch {
       // handled by fetchIssues
@@ -81,6 +86,18 @@ export default function DataHealthPanel() {
           Run Check
         </button>
       </div>
+
+      {dryRun && (
+        <pre className="text-xs bg-gray-50 border border-gray-200 rounded-lg p-3 whitespace-pre-wrap text-gray-700">
+          {dryRun}
+        </pre>
+      )}
+
+      {summary && summary.scenario_tests_failed > 0 && (
+        <p className="text-xs text-red-600">
+          {summary.scenario_tests_failed} built-in status scenario(s) failed
+        </p>
+      )}
 
       {loading ? (
         <p className="text-xs text-gray-400">Loading…</p>

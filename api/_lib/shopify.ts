@@ -318,6 +318,10 @@ export interface HistoricalEventsPage {
   cursor: string | null
 }
 
+// Partner EventType values only. Do not add AppEventTypes such as
+// SUBSCRIPTION_CHARGE_EXPIRED / FROZEN — those are a different GraphQL enum
+// and would fail the events() filter. Managed-pricing freeze/cancel/expire
+// equivalents are SUBSCRIPTION_FROZEN / CANCELED plus relationship deactivate.
 const SUBSCRIPTION_EVENT_TYPES = [
   'SUBSCRIPTION_CREATED',
   'SUBSCRIPTION_UPDATED',
@@ -327,6 +331,8 @@ const SUBSCRIPTION_EVENT_TYPES = [
   'SUBSCRIPTION_UNFROZEN',
   'RELATIONSHIP_INSTALLED',
   'RELATIONSHIP_UNINSTALLED',
+  'RELATIONSHIP_DEACTIVATED',
+  'RELATIONSHIP_REACTIVATED',
 ]
 
 export async function getHistoricalEvents(
