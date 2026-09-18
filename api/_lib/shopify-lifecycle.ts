@@ -27,11 +27,15 @@ export type CrmShopifyCustomer = {
   shopify_cancel_effective_on: string | null
   store_url: string | null
   mrr_override: number | null
+  total_revenue_override?: number | null
   cancellation_date: string | null
+  signup_date?: string | null
+  notes?: string | null
   name: string | null
   email: string | null
   stripe_customer_id?: string | null
   calculated_total_revenue?: number | null
+  calculated_mrr?: number | null
 }
 
 export type ShopifyShopRef = {
@@ -57,16 +61,21 @@ export type DerivedShopifyLifecycle = {
 }
 
 const CUSTOMER_COLUMNS =
-  'id, billing_channel, client_status, user_type, shopify_shop_id, shopify_shop_domain, shopify_subscription_id, shopify_subscription_created_at, shopify_trial_ends_at, shopify_cancelled_at, shopify_cancel_effective_on, store_url, mrr_override, cancellation_date, name, email, stripe_customer_id, calculated_total_revenue'
+  'id, billing_channel, client_status, user_type, shopify_shop_id, shopify_shop_domain, shopify_subscription_id, shopify_subscription_created_at, shopify_trial_ends_at, shopify_cancelled_at, shopify_cancel_effective_on, store_url, mrr_override, total_revenue_override, cancellation_date, signup_date, notes, name, email, stripe_customer_id, calculated_total_revenue, calculated_mrr'
 
 export function normalizeShopDomain(value: string | null | undefined): string | null {
   if (!value) return null
-  let host = String(value).trim().toLowerCase()
-  host = host.replace(/^https?:\/\//, '')
+  const raw = String(value).trim().toLowerCase()
+  const myshopify = raw.match(/[a-z0-9][a-z0-9-]*\.myshopify\.com/)
+  if (myshopify) return myshopify[0]
+
+  let host = raw.replace(/^https?:\/\//, '')
   host = host.split('/')[0] ?? ''
   host = host.split('?')[0] ?? ''
   host = host.split('#')[0] ?? ''
+  host = host.split(',')[0] ?? ''
   host = host.replace(/:\d+$/, '')
+  host = host.replace(/[;,\s]+$/g, '')
   host = host.replace(/\.+$/, '').replace(/^\.+/, '')
   return host || null
 }
@@ -186,6 +195,12 @@ export class ShopifyCustomerIndex {
 function preferCanonical(candidate: CrmShopifyCustomer, existing: CrmShopifyCustomer): boolean {
   if (existing.billing_channel === 'stripe' && candidate.billing_channel !== 'stripe') return false
   if (candidate.billing_channel === 'stripe' && existing.billing_channel !== 'stripe') return true
+  const existingShop = shopGidNumeric(existing.shopify_shop_id)
+  const candidateShop = shopGidNumeric(candidate.shopify_shop_id)
+  if (existingShop && !candidateShop) return false
+  if (candidateShop && !existingShop) return true
+  if (existing.billing_channel === 'shopify' && candidate.billing_channel !== 'shopify') return false
+  if (candidate.billing_channel === 'shopify' && existing.billing_channel !== 'shopify') return true
   return false
 }
 
@@ -424,10 +439,8 @@ async function lookupExistingShopifyCustomer(shop: ShopifyShopRef): Promise<CrmS
   const { data } = await supabaseAdmin
     .from('crm_customers')
     .select(CUSTOMER_COLUMNS)
-    .or(
-      `shopify_shop_domain.eq.${host},shopify_shop_domain.eq.https://${host},store_url.eq.https://${host},store_url.eq.${host},store_url.eq.https://${host}/`
-    )
-    .limit(20)
+    .or(`shopify_shop_domain.ilike.%${host}%,store_url.ilike.%${host}%`)
+    .limit(50)
 
   const matches = ((data ?? []) as CrmShopifyCustomer[]).filter((row) => {
     const other = normalizeShopDomain(row.shopify_shop_domain) ?? normalizeShopDomain(row.store_url)
@@ -471,10 +484,25 @@ export async function findOrCreateShopifyCustomer(
 
     const patch: Record<string, unknown> = {}
     if (shop.shopId && !existing.shopify_shop_id) patch.shopify_shop_id = shop.shopId
-    if (shop.domain && !existing.shopify_shop_domain) patch.shopify_shop_domain = shop.domain
+    const cleanDomain = normalizeShopDomain(shop.domain)
+    if (cleanDomain && !existing.shopify_shop_domain) patch.shopify_shop_domain = cleanDomain
     if (subscriptionId && !existing.shopify_subscription_id) patch.shopify_subscription_id = subscriptionId
     if (shop.name && !existing.name) patch.name = shop.name
-    if (shop.domain && !existing.store_url) patch.store_url = `https://${shop.domain}`
+    if (cleanDomain) {
+      const currentHost = normalizeShopDomain(existing.store_url)
+      if (!existing.store_url || currentHost !== cleanDomain || /[;,]/.test(existing.store_url)) {
+        patch.store_url = `https://${cleanDomain}`
+      }
+      if (existing.shopify_shop_domain && normalizeShopDomain(existing.shopify_shop_domain) !== cleanDomain) {
+        patch.shopify_shop_domain = cleanDomain
+      } else if (!existing.shopify_shop_domain) {
+        patch.shopify_shop_domain = cleanDomain
+      }
+    }
+    if (!isStripeAuthoritative(existing.billing_channel) && existing.billing_channel !== 'shopify') {
+      patch.billing_channel = 'shopify'
+      console.log(`[Shopify Sync] Setting billing_channel=Shopify for ${existing.id}`)
+    }
 
     if (Object.keys(patch).length > 0) {
       await supabaseAdmin.from('crm_customers').update(patch).eq('id', existing.id)
@@ -496,12 +524,13 @@ export async function findOrCreateShopifyCustomer(
     }
   }
 
+  const insertHost = normalizeShopDomain(shop.domain)
   const insert = {
     shopify_shop_id: shop.shopId || null,
-    shopify_shop_domain: shop.domain,
+    shopify_shop_domain: insertHost,
     shopify_subscription_id: subscriptionId,
     name: shop.name,
-    store_url: shop.domain ? `https://${shop.domain}` : null,
+    store_url: insertHost ? `https://${insertHost}` : null,
     billing_channel: 'shopify',
     user_type: 'standard',
     source: 'shopify',
@@ -540,9 +569,10 @@ export function shopifyCustomerUpdateFromLifecycle(input: {
   derived: DerivedShopifyLifecycle
   hasConfirmedPayment: boolean
 }): { record: Record<string, unknown>; nextStatus: string | null; stripePreserved: boolean } {
+  const cleanDomain = normalizeShopDomain(input.shop.domain) ?? normalizeShopDomain(input.customer.shopify_shop_domain)
   const metadata: Record<string, unknown> = {
     shopify_shop_id: input.shop.shopId || input.customer.shopify_shop_id,
-    shopify_shop_domain: input.shop.domain ?? input.customer.shopify_shop_domain,
+    shopify_shop_domain: cleanDomain ?? input.customer.shopify_shop_domain,
     shopify_subscription_id: input.derived.subscriptionId ?? input.customer.shopify_subscription_id,
     shopify_subscription_status: input.derived.shopifyStatus,
     shopify_subscription_created_at:
@@ -552,13 +582,18 @@ export function shopifyCustomerUpdateFromLifecycle(input: {
     shopify_cancel_effective_on:
       input.derived.cancelEffectiveOn ?? input.customer.shopify_cancel_effective_on,
     shopify_billing_interval: input.derived.billingInterval,
-    shopify_subscription_amount: input.derived.flatRateAmount,
     shopify_cancel_at_end_of_cycle: input.derived.cancelAtEndOfCycle,
     shopify_pending_update: input.derived.pendingUpdate,
     shopify_last_status_sync_at: new Date().toISOString(),
     last_synced_at: new Date().toISOString(),
+    ...(input.derived.flatRateAmount != null
+      ? { shopify_subscription_amount: input.derived.flatRateAmount }
+      : {}),
     ...(input.shop.name && !input.customer.name ? { name: input.shop.name } : {}),
-    ...(input.shop.domain && !input.customer.store_url ? { store_url: `https://${input.shop.domain}` } : {}),
+    ...(cleanDomain ? { store_url: `https://${cleanDomain}` } : {}),
+    ...(!input.customer.signup_date && input.derived.subscriptionCreatedAt
+      ? { signup_date: input.derived.subscriptionCreatedAt }
+      : {}),
   }
 
   if (isStripeAuthoritative(input.customer.billing_channel)) {
@@ -566,7 +601,10 @@ export function shopifyCustomerUpdateFromLifecycle(input: {
     return { record: metadata, nextStatus: null, stripePreserved: true }
   }
 
-  const confirmedRevenue = input.hasConfirmedPayment ? 1 : 0
+  const paidFromRecord =
+    Number(input.customer.total_revenue_override ?? 0) > 0 ||
+    Number(input.customer.calculated_total_revenue ?? 0) > 0
+  const confirmedRevenue = input.hasConfirmedPayment || paidFromRecord ? 1 : 0
   const nextStatus = resolveClientStatus({
     userType: input.customer.user_type,
     billingChannel: 'shopify',
@@ -586,11 +624,19 @@ export function shopifyCustomerUpdateFromLifecycle(input: {
     console.log(`[Shopify Sync] Setting client_status=${nextStatus}`)
   }
 
-  const calculatedMrr = shopifyFlatRateMrr({
+  const computedMrr = shopifyFlatRateMrr({
     lifecycle: input.derived.lifecycle,
     billingPeriod: input.derived.billingInterval,
     flatRateAmount: input.derived.flatRateAmount,
   })
+  let calculatedMrr = computedMrr
+  if (
+    computedMrr <= 0 &&
+    input.derived.lifecycle === 'ACTIVE' &&
+    Number(input.customer.calculated_mrr ?? 0) > 0
+  ) {
+    calculatedMrr = Number(input.customer.calculated_mrr)
+  }
 
   const cancellationDate =
     nextStatus === 'canceled'
@@ -604,16 +650,20 @@ export function shopifyCustomerUpdateFromLifecycle(input: {
         ? null
         : input.customer.cancellation_date
 
+  const record: Record<string, unknown> = {
+    ...metadata,
+    billing_channel: 'shopify',
+    client_status: nextStatus,
+    cancellation_date: cancellationDate,
+  }
+  if (input.customer.mrr_override == null) {
+    record.calculated_mrr = calculatedMrr
+  }
+
   return {
     nextStatus,
     stripePreserved: false,
-    record: {
-      ...metadata,
-      billing_channel: 'shopify',
-      client_status: nextStatus,
-      calculated_mrr: calculatedMrr,
-      cancellation_date: cancellationDate,
-    },
+    record,
   }
 }
 

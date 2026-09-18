@@ -65,9 +65,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       name: string | null
       store_url: string | null
       shopify_shop_domain: string | null
+      signup_date: string | null
     }>(
       'crm_customers',
-      'id, email, stripe_customer_id, client_status, billing_channel, name, store_url, shopify_shop_domain'
+      'id, email, stripe_customer_id, client_status, billing_channel, name, store_url, shopify_shop_domain, signup_date'
     )
 
     const crmByStripeId = new Map<string, string>()
@@ -77,12 +78,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const crmBillingById = new Map<string, string>()
     const crmDomainById = new Map<string, string>()
     const crmStoreUrlById = new Map<string, string | null>()
+    const crmSignupById = new Map<string, string | null>()
     for (const c of existingCrm) {
       if (c.stripe_customer_id) crmByStripeId.set(c.stripe_customer_id, c.id)
       if (c.email) crmByEmail.set(c.email.toLowerCase().trim(), c.id)
       crmStatusById.set(c.id, c.client_status ?? 'prospect')
       crmBillingById.set(c.id, c.billing_channel ?? 'none')
       crmStoreUrlById.set(c.id, c.store_url)
+      crmSignupById.set(c.id, c.signup_date)
       const domain =
         myshopifyDomainFromUnknown(c.shopify_shop_domain) ?? myshopifyDomainFromUnknown(c.store_url)
       if (domain) {
@@ -181,6 +184,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       totalRevenue: number
       hasPayment: boolean
       storeDomain: string | null
+      created: number | null
       sub: (typeof subscriptions)[0] | undefined
     }
 
@@ -193,6 +197,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const storeDomain = myshopifyDomainFromMetadata(
         (cust as { metadata?: Record<string, string> | null }).metadata
       )
+      const created = typeof cust.created === 'number' ? cust.created : null
       const sub = subsByCustomer.get(cust.id)
       const rev = revenueByCustomer.get(cust.id) ?? 0
       const emailKey = email?.toLowerCase() ?? null
@@ -204,6 +209,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         existing.hasPayment = existing.hasPayment || rev > 0
         if (!existing.name && name) existing.name = name
         if (!existing.storeDomain && storeDomain) existing.storeDomain = storeDomain
+        if (created != null && (existing.created == null || created < existing.created)) {
+          existing.created = created
+        }
 
         // Prefer active subscription
         if (sub) {
@@ -228,6 +236,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           totalRevenue: rev,
           hasPayment: rev > 0,
           storeDomain,
+          created,
           sub,
         }
         if (emailKey) {
@@ -310,6 +319,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (existingId === 'pending') existingId = null
         if (merged.storeDomain && (!existingId || !crmStoreUrlById.get(existingId))) {
           record.store_url = `https://${merged.storeDomain}`
+        }
+        if (merged.created) {
+          const signupIso = new Date(merged.created * 1000).toISOString()
+          if (!existingId || !crmSignupById.get(existingId)) {
+            record.signup_date = signupIso
+          }
         }
 
         // Shopify is authoritative for Shopify-billed customers.

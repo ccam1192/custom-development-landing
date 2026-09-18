@@ -726,11 +726,14 @@ async function runLifecyclePhase(
         cursor.stats.skippedMissingIds++
       } else {
         if (result.created) cursor.stats.customersCreated++
-        const hasPayment = shopHasConfirmedPayment(paid, {
-          shopId: shop.shopId,
-          domain: shop.domain,
-          customerId: result.customer.id,
-        })
+        const hasPayment =
+          shopHasConfirmedPayment(paid, {
+            shopId: shop.shopId,
+            domain: shop.domain,
+            customerId: result.customer.id,
+          }) ||
+          Number(result.customer.total_revenue_override ?? 0) > 0 ||
+          Number(result.customer.calculated_total_revenue ?? 0) > 0
 
         const update = shopifyCustomerUpdateFromLifecycle({
           customer: result.customer,

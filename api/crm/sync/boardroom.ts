@@ -112,7 +112,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           billingChannel: bu.billingChannel,
         })
 
-        const shopifyOwned = existing?.billing_channel === 'shopify'
+        const shopifyOwned =
+          existing?.billing_channel === 'shopify' || !!existing?.shopify_shop_id
         const record: Record<string, unknown> = {
           boardroom_user_id: bu.id,
           name: bu.name ?? existing?.name ?? null,

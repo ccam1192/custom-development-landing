@@ -25,6 +25,7 @@ type CrmRow = {
   name: string | null
   billing_channel: string | null
   store_url: string | null
+  signup_date: string | null
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -90,7 +91,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 }
 
 const CRM_WEBHOOK_COLUMNS =
-  'id, user_type, boardroom_subscription_status, cancellation_date, email, name, billing_channel, store_url'
+  'id, user_type, boardroom_subscription_status, cancellation_date, email, name, billing_channel, store_url, signup_date'
 
 async function findCrmByStripeId(stripeCustomerId: string): Promise<CrmRow | null> {
   const { data } = await supabaseAdmin
@@ -122,6 +123,11 @@ async function retrieveStripeCustomer(stripeCustomerId: string): Promise<Stripe.
   }
 }
 
+function stripeCustCreatedIso(value: string | Stripe.Customer): string | null {
+  if (typeof value === 'string' || !value.created) return null
+  return new Date(value.created * 1000).toISOString()
+}
+
 /**
  * Match an existing CRM row or insert a new one from Stripe customer data.
  */
@@ -132,7 +138,18 @@ async function findOrCreateCrmCustomer(
     typeof stripeCustomerIdOrObj === 'string' ? stripeCustomerIdOrObj : stripeCustomerIdOrObj.id
 
   const existing = await findCrmByStripeId(stripeId)
-  if (existing) return existing
+  if (existing) {
+    const signupIso = !existing.signup_date ? stripeCustCreatedIso(stripeCustomerIdOrObj) : null
+    if (signupIso) {
+      await supabaseAdmin
+        .from('crm_customers')
+        .update({ signup_date: signupIso })
+        .eq('id', existing.id)
+        .is('signup_date', null)
+      return { ...existing, signup_date: signupIso }
+    }
+    return existing
+  }
 
   const stripeCust =
     typeof stripeCustomerIdOrObj === 'string'
@@ -157,6 +174,9 @@ async function findOrCreateCrmCustomer(
           ...(isShopify ? {} : { billing_channel: 'stripe' }),
           ...(name && !byEmail.name ? { name } : {}),
           ...(storeDomain && !byEmail.store_url ? { store_url: `https://${storeDomain}` } : {}),
+          ...(!byEmail.signup_date && stripeCust.created
+            ? { signup_date: new Date(stripeCust.created * 1000).toISOString() }
+            : {}),
         })
         .eq('id', byEmail.id)
       return { ...byEmail, name: byEmail.name ?? name, stripe_customer_id: stripeId } as CrmRow
@@ -175,6 +195,7 @@ async function findOrCreateCrmCustomer(
       billing_channel: 'stripe',
       source: 'stripe',
       client_status: 'prospect',
+      signup_date: stripeCust.created ? new Date(stripeCust.created * 1000).toISOString() : null,
       last_synced_at: new Date().toISOString(),
     })
     .select(CRM_WEBHOOK_COLUMNS)
