@@ -90,7 +90,7 @@ export default function BulkActions({
   function handleBulkExport() {
     const headers = [
       'Name', 'Email', 'Signup Date', 'Store URL', 'User Type', 'Billing Channel',
-      'Client Status', 'Cancellation Date', 'MRR', 'Total Revenue', 'Source', 'Notes',
+      'Client Status', 'Last Payment', 'Cancellation Date', 'MRR', 'Total Revenue', 'Source', 'Notes',
     ]
     const rows = selectedCustomers.map((c) => [
       c.name ?? '',
@@ -100,6 +100,7 @@ export default function BulkActions({
       c.user_type,
       c.billing_channel,
       c.client_status,
+      c.last_payment ? new Date(c.last_payment).toISOString().split('T')[0] : '',
       c.cancellation_date ? new Date(c.cancellation_date).toISOString().split('T')[0] : '',
       String(c.mrr_override ?? c.calculated_mrr),
       String(c.total_revenue_override ?? c.calculated_total_revenue),

@@ -41,6 +41,7 @@ interface UseCustomersReturn {
   selectedIds: Set<string>
   filteredTotals: FilteredTotals
   columnOrder: GridColumnId[]
+  visibleColumns: GridColumnId[]
   columnWidths: Partial<Record<GridColumnId, number>>
   setFilters: (f: CustomerFilters) => void
   setColumnFilter: (id: GridColumnId, filter: ColumnFilter | undefined) => void
@@ -50,6 +51,7 @@ interface UseCustomersReturn {
   setPage: (page: number) => void
   setPageSize: (size: number) => void
   setColumnOrder: (order: GridColumnId[]) => void
+  setVisibleColumns: (visible: GridColumnId[]) => void
   setColumnWidth: (id: GridColumnId, width: number) => void
   views: SavedGridView[]
   activeViewId: string
@@ -80,6 +82,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
   const [sortField, setSortField] = useState<SortField>(initial.current.prefs.sortField)
   const [sortDirection, setSortDirection] = useState<SortDirection>(initial.current.prefs.sortDirection)
   const [columnOrder, setColumnOrderState] = useState<GridColumnId[]>(initial.current.prefs.order)
+  const [visibleColumns, setVisibleColumnsState] = useState<GridColumnId[]>(initial.current.prefs.visible)
   const [columnWidths, setColumnWidths] = useState<Partial<Record<GridColumnId, number>>>(initial.current.prefs.widths)
   const [views, setViews] = useState<SavedGridView[]>(initial.current.views)
   const [activeViewId, setActiveViewId] = useState<string>(initial.current.activeViewId ?? ALL_CUSTOMERS_VIEW_ID)
@@ -96,6 +99,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
 
   const currentPrefs = (): GridPrefs => ({
     order: columnOrder,
+    visible: visibleColumns,
     widths: columnWidths,
     sortField,
     sortDirection,
@@ -116,7 +120,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
     })
     // currentPrefs is derived each render; persist the snapshot we just built
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uid, columnOrder, columnWidths, sortField, sortDirection, filters, search, views, defaultViewId, activeViewId])
+  }, [uid, columnOrder, visibleColumns, columnWidths, sortField, sortDirection, filters, search, views, defaultViewId, activeViewId])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -250,6 +254,10 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
     setColumnOrderState(order)
   }, [])
 
+  const setVisibleColumns = useCallback((visible: GridColumnId[]) => {
+    setVisibleColumnsState(visible)
+  }, [])
+
   const setColumnWidth = useCallback((id: GridColumnId, width: number) => {
     setColumnWidths((prev) => ({ ...prev, [id]: width }))
   }, [])
@@ -283,6 +291,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
     setSortField(next.sortField)
     setSortDirection(next.sortDirection)
     setColumnOrderState(next.order)
+    setVisibleColumnsState(next.visible)
     setColumnWidths(next.widths)
     setPagination((prev) => ({ ...prev, page: 1 }))
     setSelectedIds(new Set())
@@ -303,7 +312,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
     if (activeViewId === ALL_CUSTOMERS_VIEW_ID) return
     setViews((prev) => prev.map((v) => (v.id === activeViewId ? { ...v, prefs } : v)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeViewId, columnOrder, columnWidths, sortField, sortDirection, filters])
+  }, [activeViewId, columnOrder, visibleColumns, columnWidths, sortField, sortDirection, filters])
 
   const saveViewAs = useCallback(
     (name: string) => {
@@ -315,7 +324,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
       setActiveViewId(id)
       // eslint-disable-next-line react-hooks/exhaustive-deps
     },
-    [columnOrder, columnWidths, sortField, sortDirection, filters],
+    [columnOrder, visibleColumns, columnWidths, sortField, sortDirection, filters],
   )
 
   const setDefaultView = useCallback((id: string) => {
@@ -347,6 +356,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
     selectedIds,
     filteredTotals,
     columnOrder,
+    visibleColumns,
     columnWidths,
     setFilters: applyFilters,
     setColumnFilter,
@@ -356,6 +366,7 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
     setPage,
     setPageSize,
     setColumnOrder,
+    setVisibleColumns,
     setColumnWidth,
     views,
     activeViewId,

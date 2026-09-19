@@ -34,6 +34,11 @@ import {
   normalizeShopDomain,
   type ShopifyShopRef,
 } from './shopify-lifecycle.js'
+import {
+  advanceLastPayments,
+  existingProviderTxnIds,
+  isCollectedShopifyPayment,
+} from './last-payment.js'
 
 export const SHOPIFY_SYNC_TIME_BUDGET_MS = 45_000
 const EVENT_WINDOW_DAYS = 365
@@ -654,6 +659,10 @@ async function runTransactionsPhase(
 
     for (let i = 0; i < rows.length; i += 200) {
       const batch = rows.slice(i, i + 200)
+      const already = await existingProviderTxnIds(
+        'shopify',
+        batch.map((row) => String(row.provider_transaction_id ?? ''))
+      )
       const { error: upsertErr } = await supabaseAdmin
         .from('crm_revenue_transactions')
         .upsert(batch, { onConflict: 'provider,provider_transaction_id' })
@@ -661,6 +670,18 @@ async function runTransactionsPhase(
         errorDetails.push({ message: `Upsert batch: ${upsertErr.message}` })
       } else {
         cursor.stats.txnUpserted += batch.length
+        await advanceLastPayments(
+          batch
+            .filter(
+              (row) =>
+                isCollectedShopifyPayment(row) && !already.has(String(row.provider_transaction_id ?? ''))
+            )
+            .map((row) => ({
+              customerId: String(row.crm_customer_id),
+              paymentAt: String(row.transaction_date),
+              provider: 'shopify' as const,
+            }))
+        )
       }
     }
 

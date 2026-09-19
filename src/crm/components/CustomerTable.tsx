@@ -39,6 +39,7 @@ interface CustomerTableProps {
   selectedIds: Set<string>
   filteredTotals: FilteredTotals
   columnOrder: GridColumnId[]
+  visibleColumns: GridColumnId[]
   columnWidths: Partial<Record<GridColumnId, number>>
   filters: import('../types').CustomerFilters
   onSort: (field: SortField, dir?: SortDirection) => void
@@ -102,6 +103,7 @@ export default function CustomerTable({
   selectedIds,
   filteredTotals,
   columnOrder,
+  visibleColumns,
   columnWidths,
   filters,
   onSort,
@@ -120,10 +122,10 @@ export default function CustomerTable({
   const resizing = useRef<{ id: GridColumnId; startX: number; startW: number } | null>(null)
   const dragId = useRef<GridColumnId | null>(null)
 
-  const columns = useMemo(
-    () => columnOrder.map((id) => COLUMN_BY_ID[id]).filter(Boolean),
-    [columnOrder]
-  )
+  const columns = useMemo(() => {
+    const visible = new Set(visibleColumns)
+    return columnOrder.filter((id) => visible.has(id)).map((id) => COLUMN_BY_ID[id]).filter(Boolean)
+  }, [columnOrder, visibleColumns])
 
   const tableWidth =
     CHECKBOX_COL_WIDTH +
@@ -211,6 +213,8 @@ export default function CustomerTable({
         )
       case 'cancellation_date':
         return <span className="text-gray-500 whitespace-nowrap">{formatDate(c.cancellation_date)}</span>
+      case 'last_payment':
+        return <span className="text-gray-500 whitespace-nowrap">{formatDate(c.last_payment)}</span>
       case 'effective_mrr':
         return (
           <span className={`whitespace-nowrap ${hasMrrOverride(c) ? 'text-amber-700' : 'text-gray-900'}`}>

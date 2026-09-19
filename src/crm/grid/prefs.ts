@@ -3,6 +3,7 @@ import { DEFAULT_COLUMN_ORDER, COLUMN_BY_ID } from './columns'
 
 export interface GridPrefs {
   order: GridColumnId[]
+  visible: GridColumnId[]
   widths: Partial<Record<GridColumnId, number>>
   sortField: SortField
   sortDirection: SortDirection
@@ -27,6 +28,7 @@ export const ALL_CUSTOMERS_VIEW_ID = '__all__'
 
 export const DEFAULT_GRID_PREFS: GridPrefs = {
   order: [...DEFAULT_COLUMN_ORDER],
+  visible: [...DEFAULT_COLUMN_ORDER],
   widths: {},
   sortField: 'created_at',
   sortDirection: 'desc',
@@ -43,6 +45,20 @@ export const DEFAULT_WORKSPACE: GridWorkspace = {
 
 function storageKey(userId: string | undefined): string {
   return `crm-grid-prefs:${userId || 'local'}`
+}
+
+export function sanitizeVisible(visible: unknown): GridColumnId[] {
+  const known = new Set(DEFAULT_COLUMN_ORDER)
+  if (!Array.isArray(visible)) return [...DEFAULT_COLUMN_ORDER]
+  const seen = new Set<GridColumnId>()
+  const next: GridColumnId[] = []
+  for (const id of visible) {
+    if (typeof id === 'string' && known.has(id as GridColumnId) && !seen.has(id as GridColumnId)) {
+      next.push(id as GridColumnId)
+      seen.add(id as GridColumnId)
+    }
+  }
+  return next.length > 0 ? next : [...DEFAULT_COLUMN_ORDER]
 }
 
 export function sanitizeOrder(order: unknown): GridColumnId[] {
@@ -75,6 +91,7 @@ export function sanitizePrefs(parsed: Partial<GridPrefs> | undefined): GridPrefs
   }
   return {
     order: sanitizeOrder(parsed?.order),
+    visible: sanitizeVisible(parsed?.visible),
     widths,
     sortField: typeof parsed?.sortField === 'string' ? (parsed.sortField as SortField) : DEFAULT_GRID_PREFS.sortField,
     sortDirection: parsed?.sortDirection === 'asc' || parsed?.sortDirection === 'desc' ? parsed.sortDirection : 'desc',

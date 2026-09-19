@@ -69,6 +69,7 @@ export interface CrmCustomer {
   billing_channel: BillingChannel
   client_status: ClientStatus
   cancellation_date: string | null
+  last_payment: string | null
   calculated_mrr: number
   mrr_override: number | null
   calculated_total_revenue: number
@@ -234,6 +235,7 @@ export type GridColumnId =
   | 'billing_channel'
   | 'client_status'
   | 'cancellation_date'
+  | 'last_payment'
   | 'effective_mrr'
   | 'effective_total_revenue'
   | 'notes'

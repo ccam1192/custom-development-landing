@@ -70,6 +70,14 @@ export const GRID_COLUMNS: GridColumnDef[] = [
     })),
   },
   {
+    id: 'last_payment',
+    label: 'Last Payment',
+    sortField: 'last_payment',
+    filterKind: 'date',
+    defaultWidth: 130,
+    minWidth: 96,
+  },
+  {
     id: 'cancellation_date',
     label: 'Cancel Date',
     sortField: 'cancellation_date',

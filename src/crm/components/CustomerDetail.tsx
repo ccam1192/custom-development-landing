@@ -153,6 +153,7 @@ export default function CustomerDetail({ customer, onClose, onEdit, onRefresh }:
             }
           />
           <Field label="Signup Date" value={formatDate(customer.signup_date)} />
+          <Field label="Last Payment" value={formatDate(customer.last_payment)} />
           <Field label="User Type" value={USER_TYPE_LABELS[customer.user_type] ?? customer.user_type} />
           <Field label="Billing Channel" value={BILLING_CHANNEL_LABELS[customer.billing_channel]} />
           <Field label="Source" value={customer.source ? SOURCE_LABELS[customer.source] : '—'} />

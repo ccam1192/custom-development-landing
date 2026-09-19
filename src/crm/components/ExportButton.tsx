@@ -41,6 +41,7 @@ export default function ExportButton({ filters, search, mode }: ExportButtonProp
         'User Type': c.user_type,
         'Billing Channel': c.billing_channel,
         'Client Status': c.client_status,
+        'Last Payment': c.last_payment ? new Date(c.last_payment).toISOString().split('T')[0] : '',
         'Cancellation Date': c.cancellation_date ? new Date(c.cancellation_date).toISOString().split('T')[0] : '',
         'MRR': c.mrr_override ?? c.calculated_mrr,
         'Total Revenue': c.total_revenue_override ?? c.calculated_total_revenue,

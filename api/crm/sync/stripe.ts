@@ -12,6 +12,7 @@ import {
   getAllStripeSubscriptions,
   getPaidInvoices,
 } from '../../_lib/stripe.js'
+import { advanceLastPayments, existingProviderTxnIds } from '../../_lib/last-payment.js'
 
 export const config = { maxDuration: 300 }
 
@@ -138,6 +139,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ── Phase 4: Batch upsert revenue transactions ──
     console.log('[Stripe Sync] Upserting revenue transactions...')
     const txnRows: Array<Record<string, unknown>> = []
+    const paidAtByTxnId = new Map<string, string>()
     for (const inv of invoices) {
       if (!inv.id || !inv.amount_paid || inv.amount_paid <= 0) continue
       const custId =
@@ -148,6 +150,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const crmId = custId
         ? crmByStripeId.get(custId) ?? null
         : null
+
+      const created = (inv as { created: number }).created
+      const paidAt = inv.status_transitions?.paid_at ?? created
+      paidAtByTxnId.set(inv.id, new Date(paidAt * 1000).toISOString())
 
       txnRows.push({
         provider: 'stripe',
@@ -160,7 +166,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         crm_customer_id: crmId,
         amount: inv.amount_paid / 100,
         currency: (inv.currency ?? 'usd').toUpperCase(),
-        transaction_date: new Date((inv as { created: number }).created * 1000).toISOString(),
+        transaction_date: new Date(created * 1000).toISOString(),
         status: 'succeeded',
         transaction_type: 'payment',
         description: `Invoice ${(inv as { number?: string }).number ?? inv.id}`,
@@ -170,12 +176,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Upsert in chunks of 500
     for (let i = 0; i < txnRows.length; i += 500) {
       const batch = txnRows.slice(i, i + 500)
+      const already = await existingProviderTxnIds(
+        'stripe',
+        batch.map((row) => String(row.provider_transaction_id ?? ''))
+      )
       const { error: txnErr } = await supabaseAdmin
         .from('crm_revenue_transactions')
         .upsert(batch, { onConflict: 'provider,provider_transaction_id' })
       if (txnErr) {
         errors++
         errorDetails.push({ message: `Txn batch ${i / 500 + 1}: ${txnErr.message}` })
+      } else {
+        await advanceLastPayments(
+          batch
+            .filter(
+              (row) =>
+                row.crm_customer_id &&
+                row.status === 'succeeded' &&
+                Number(row.amount) > 0 &&
+                !already.has(String(row.provider_transaction_id ?? ''))
+            )
+            .map((row) => ({
+              customerId: String(row.crm_customer_id),
+              paymentAt:
+                paidAtByTxnId.get(String(row.provider_transaction_id)) ?? String(row.transaction_date),
+              provider: 'stripe' as const,
+            }))
+        )
       }
     }
     console.log(`[Stripe Sync] Upserted ${txnRows.length} transactions`)

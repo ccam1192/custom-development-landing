@@ -3,6 +3,7 @@ import { supabaseAdmin } from '../_lib/supabase-admin.js'
 import { constructWebhookEvent, isStripeConfigured, getStripe } from '../_lib/stripe.js'
 import { determineClientStatus, calculateMrr } from '../_lib/status-engine.js'
 import { myshopifyDomainFromMetadata } from '../_lib/shopify-lifecycle.js'
+import { advanceLastPayments, existingProviderTxnIds } from '../_lib/last-payment.js'
 import type Stripe from 'stripe'
 
 /**
@@ -274,6 +275,11 @@ async function handleSubscriptionEvent(sub: Stripe.Subscription) {
     .eq('id', customer.id)
 }
 
+function stripeInvoicePaidAt(invoice: Stripe.Invoice): string {
+  const paidAt = invoice.status_transitions?.paid_at ?? invoice.created
+  return new Date(paidAt * 1000).toISOString()
+}
+
 async function handleInvoicePaid(invoice: Stripe.Invoice) {
   if (!invoice.id || !invoice.amount_paid || invoice.amount_paid <= 0) return
 
@@ -282,8 +288,9 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
 
   const customer = customerId ? await findOrCreateCrmCustomer(customerId) : null
   const crmCustomerId = customer?.id ?? null
+  const alreadyRecorded = (await existingProviderTxnIds('stripe', [invoice.id])).has(invoice.id)
 
-  await supabaseAdmin.from('crm_revenue_transactions').upsert(
+  const { error: txnErr } = await supabaseAdmin.from('crm_revenue_transactions').upsert(
     {
       provider: 'stripe',
       provider_transaction_id: invoice.id,
@@ -302,6 +309,12 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
     },
     { onConflict: 'provider,provider_transaction_id' }
   )
+
+  if (!txnErr && crmCustomerId && !alreadyRecorded) {
+    await advanceLastPayments([
+      { customerId: crmCustomerId, paymentAt: stripeInvoicePaidAt(invoice), provider: 'stripe' },
+    ])
+  }
 
   if (crmCustomerId) {
     const { data: txns } = await supabaseAdmin

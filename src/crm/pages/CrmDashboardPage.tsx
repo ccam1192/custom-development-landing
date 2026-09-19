@@ -15,6 +15,7 @@ import ExportButton from '../components/ExportButton'
 import ImportWizard from '../components/ImportWizard'
 import DataHealthPanel from '../components/DataHealthPanel'
 import SavedViewsMenu from '../components/SavedViewsMenu'
+import ColumnSelector from '../components/ColumnSelector'
 import SyncLogsPanel from '../components/SyncLogsPanel'
 import type { CrmCustomer } from '../types'
 
@@ -32,6 +33,7 @@ export default function CrmDashboardPage() {
     selectedIds,
     filteredTotals,
     columnOrder,
+    visibleColumns,
     columnWidths,
     setColumnFilter,
     setSearch,
@@ -40,6 +42,7 @@ export default function CrmDashboardPage() {
     setPage,
     setPageSize,
     setColumnOrder,
+    setVisibleColumns,
     setColumnWidth,
     views,
     activeViewId,
@@ -167,6 +170,11 @@ export default function CrmDashboardPage() {
                 onSetDefault={setDefaultView}
                 onDelete={deleteView}
               />
+              <ColumnSelector
+                order={columnOrder}
+                visible={visibleColumns}
+                onChange={setVisibleColumns}
+              />
               <button
                 type="button"
                 onClick={clearFilters}
@@ -199,6 +207,7 @@ export default function CrmDashboardPage() {
             selectedIds={selectedIds}
             filteredTotals={filteredTotals}
             columnOrder={columnOrder}
+            visibleColumns={visibleColumns}
             columnWidths={columnWidths}
             filters={filters}
             onSort={setSort}
