@@ -2,7 +2,18 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../../lib/supabase'
 import type { CrmSyncLog, CrmSyncState, SyncProvider } from '../types'
 
-export type SyncingTarget = SyncProvider | 'all' | 'shopify_initial' | 'shopify_delta' | null
+export type SyncingTarget = SyncProvider | 'all' | 'shopify_initial' | 'shopify_delta' | 'shopify_trial_emails' | null
+
+export interface ShopifyTrialEmailBackfillSummary {
+  eligible: number
+  emailsFound: number
+  updated: number
+  noEmailReturned: number
+  skippedExistingEmail: number
+  skippedNoShopIdentity: number
+  errorCount: number
+  errors: Array<{ message: string; record?: string }>
+}
 
 export function useSyncStatus(onSyncComplete?: () => void) {
   const [states, setStates] = useState<CrmSyncState[]>([])
@@ -10,6 +21,7 @@ export function useSyncStatus(onSyncComplete?: () => void) {
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState<SyncingTarget>(null)
   const [shopifyProgress, setShopifyProgress] = useState<{ percent: number; label: string } | null>(null)
+  const [shopifyTrialEmailResult, setShopifyTrialEmailResult] = useState<ShopifyTrialEmailBackfillSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const fetchStates = useCallback(async () => {
@@ -142,6 +154,47 @@ export function useSyncStatus(onSyncComplete?: () => void) {
     [syncing, fetchStates, onSyncComplete, postSync]
   )
 
+  const triggerShopifyTrialEmailBackfill = useCallback(async () => {
+    if (syncing) return null
+    setSyncing('shopify_trial_emails')
+    setError(null)
+    setShopifyTrialEmailResult(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch('/api/crm/sync/shopify-trial-emails', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token ?? ''}`,
+        },
+      })
+      const payload = await res.json().catch(() => null)
+      if (!res.ok) {
+        setError(`Shopify trial emails: ${payload?.error ?? `HTTP ${res.status}`}`)
+        return null
+      }
+      const summary: ShopifyTrialEmailBackfillSummary = {
+        eligible: Number(payload?.eligible ?? 0),
+        emailsFound: Number(payload?.emailsFound ?? 0),
+        updated: Number(payload?.updated ?? 0),
+        noEmailReturned: Number(payload?.noEmailReturned ?? 0),
+        skippedExistingEmail: Number(payload?.skippedExistingEmail ?? 0),
+        skippedNoShopIdentity: Number(payload?.skippedNoShopIdentity ?? 0),
+        errorCount: Number(payload?.errorCount ?? payload?.errors?.length ?? 0),
+        errors: Array.isArray(payload?.errors) ? payload.errors : [],
+      }
+      setShopifyTrialEmailResult(summary)
+      await fetchStates()
+      onSyncComplete?.()
+      return summary
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Shopify trial email backfill failed')
+      return null
+    } finally {
+      setSyncing(null)
+    }
+  }, [syncing, fetchStates, onSyncComplete])
+
   return {
     states,
     getState,
@@ -150,8 +203,10 @@ export function useSyncStatus(onSyncComplete?: () => void) {
     error,
     triggerSync,
     triggerShopifySync,
+    triggerShopifyTrialEmailBackfill,
     lastShopifyLog,
     shopifyProgress,
+    shopifyTrialEmailResult,
     refresh: fetchStates,
   }
 }

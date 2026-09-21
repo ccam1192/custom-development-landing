@@ -65,7 +65,7 @@ export default function CrmDashboardPage() {
     refreshKpis()
   }, [refresh, refreshKpis])
 
-  const { states, syncing, error: syncError, triggerSync, triggerShopifySync, lastShopifyLog, shopifyProgress } = useSyncStatus(handleRefresh)
+  const { states, syncing, error: syncError, triggerSync, triggerShopifySync, triggerShopifyTrialEmailBackfill, lastShopifyLog, shopifyProgress, shopifyTrialEmailResult } = useSyncStatus(handleRefresh)
 
   const [viewCustomer, setViewCustomer] = useState<CrmCustomer | null>(null)
   const [editCustomer, setEditCustomer] = useState<CrmCustomer | null>(null)
@@ -86,6 +86,10 @@ export default function CrmDashboardPage() {
               shopifyProgress={shopifyProgress}
               onSync={triggerSync}
               onShopifySync={triggerShopifySync}
+              onBackfillShopifyTrialEmails={() => {
+                void triggerShopifyTrialEmailBackfill()
+              }}
+              shopifyTrialEmailResult={shopifyTrialEmailResult}
             />
           </div>
           <div className="flex items-center gap-2">

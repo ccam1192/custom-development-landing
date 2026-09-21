@@ -39,6 +39,8 @@ import {
   existingProviderTxnIds,
   isCollectedShopifyPayment,
 } from './last-payment.js'
+import { shouldFillShopifyMerchantEmail, fillShopifyMerchantEmail } from './shopify-email.js'
+import { isShopifyAdminConfigured } from './shopify-admin.js'
 
 export const SHOPIFY_SYNC_TIME_BUDGET_MS = 45_000
 const EVENT_WINDOW_DAYS = 365
@@ -778,6 +780,29 @@ async function runLifecyclePhase(
             cursor.stats.customersUpdated++
             tallyStatusMove(cursor.stats, result.customer.client_status, update.nextStatus)
             index.add({ ...result.customer, ...update.record } as typeof result.customer)
+          }
+
+          const afterUpdate = { ...result.customer, ...update.record } as typeof result.customer
+          if (
+            isShopifyAdminConfigured() &&
+            shouldFillShopifyMerchantEmail({
+              customer: afterUpdate,
+              created: result.created,
+              lifecycle: derived.lifecycle,
+            })
+          ) {
+            try {
+              const filled = await fillShopifyMerchantEmail({
+                customerId: result.customer.id,
+                domain: shop.domain ?? afterUpdate.shopify_shop_domain ?? afterUpdate.store_url,
+              })
+              if (filled.updated && filled.email) {
+                index.add({ ...afterUpdate, email: filled.email })
+              }
+            } catch (e) {
+              const message = e instanceof Error ? e.message : String(e)
+              errorDetails.push({ message: `Shop.email: ${message}`, record: shop.domain ?? shop.shopId })
+            }
           }
 
           if (shop.shopId && !update.stripePreserved) {

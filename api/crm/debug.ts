@@ -23,6 +23,8 @@ export default async function handler(_req: VercelRequest, res: VercelResponse) 
     'SHOPIFY_PARTNER_ORG_ID',
     'SHOPIFY_PARTNER_ACCESS_TOKEN',
     'SHOPIFY_APP_ID',
+    'SHOPIFY_CLIENT_ID',
+    'SHOPIFY_CLIENT_SECRET',
     'CRM_ALLOWED_EMAILS',
     'BOARDROOM_API_BASE_URL',
     'BOARDROOM_API_KEY',

@@ -4,6 +4,10 @@ import { constructWebhookEvent, isStripeConfigured, getStripe } from '../_lib/st
 import { determineClientStatus, calculateMrr } from '../_lib/status-engine.js'
 import { myshopifyDomainFromMetadata } from '../_lib/shopify-lifecycle.js'
 import { advanceLastPayments, existingProviderTxnIds } from '../_lib/last-payment.js'
+import {
+  appendPaymentFailedCancelNote,
+  isStripePaymentFailedCancellation,
+} from '../_lib/stripe-payment-failed-note.js'
 import type Stripe from 'stripe'
 
 /**
@@ -27,6 +31,7 @@ type CrmRow = {
   billing_channel: string | null
   store_url: string | null
   signup_date: string | null
+  notes: string | null
   total_revenue_override: number | null
   calculated_total_revenue: number | null
 }
@@ -94,7 +99,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 }
 
 const CRM_WEBHOOK_COLUMNS =
-  'id, user_type, boardroom_subscription_status, cancellation_date, email, name, billing_channel, store_url, signup_date, total_revenue_override, calculated_total_revenue'
+  'id, user_type, boardroom_subscription_status, cancellation_date, email, name, billing_channel, store_url, signup_date, notes, total_revenue_override, calculated_total_revenue'
 
 async function findCrmByStripeId(stripeCustomerId: string): Promise<CrmRow | null> {
   const { data } = await supabaseAdmin
@@ -273,6 +278,23 @@ async function handleSubscriptionEvent(sub: Stripe.Subscription) {
           }),
     })
     .eq('id', customer.id)
+
+  await maybeAppendPaymentFailedCancelNote(customer.id, sub)
+}
+
+async function maybeAppendPaymentFailedCancelNote(customerId: string, sub: Stripe.Subscription) {
+  if (!isStripePaymentFailedCancellation(sub)) return
+
+  const { data: row } = await supabaseAdmin
+    .from('crm_customers')
+    .select('notes')
+    .eq('id', customerId)
+    .maybeSingle()
+
+  const next = appendPaymentFailedCancelNote(row?.notes, sub.id, sub.canceled_at)
+  if (!next) return
+
+  await supabaseAdmin.from('crm_customers').update({ notes: next }).eq('id', customerId)
 }
 
 function stripeInvoicePaidAt(invoice: Stripe.Invoice): string {
