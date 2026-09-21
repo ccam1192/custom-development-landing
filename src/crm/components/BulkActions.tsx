@@ -23,7 +23,10 @@ function recastStatusForUserType(customer: CrmCustomer, userType: UserType): Cli
   if (userType === 'agency_client') return 'agency_client'
   if (customer.client_status !== 'agency_client') return customer.client_status
 
-  const revenue = Number(customer.total_revenue_override ?? customer.calculated_total_revenue ?? 0)
+  const revenue = Math.max(
+    Number(customer.total_revenue_override ?? 0),
+    Number(customer.calculated_total_revenue ?? 0)
+  )
   if (customer.billing_channel === 'stripe') {
     const live =
       customer.stripe_subscription_status === 'active' || customer.stripe_subscription_status === 'past_due'
@@ -107,7 +110,9 @@ export default function BulkActions({
       c.last_payment ? new Date(c.last_payment).toISOString().split('T')[0] : '',
       c.cancellation_date ? new Date(c.cancellation_date).toISOString().split('T')[0] : '',
       String(c.mrr_override ?? c.calculated_mrr),
-      String(c.total_revenue_override ?? c.calculated_total_revenue),
+      String(
+        Math.max(Number(c.total_revenue_override ?? 0), Number(c.calculated_total_revenue ?? 0))
+      ),
       c.source ?? '',
       c.notes ?? '',
     ])

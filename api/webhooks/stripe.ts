@@ -5,6 +5,11 @@ import { determineClientStatus, calculateMrr } from '../_lib/status-engine.js'
 import { myshopifyDomainFromMetadata } from '../_lib/shopify-lifecycle.js'
 import { advanceLastPayments, existingProviderTxnIds } from '../_lib/last-payment.js'
 import {
+  attachOrphanStripeTransactions,
+  nextCalculatedTotalRevenue,
+  stripeLedgerTotal,
+} from '../_lib/revenue.js'
+import {
   appendPaymentFailedCancelNote,
   isStripePaymentFailedCancellation,
 } from '../_lib/stripe-payment-failed-note.js'
@@ -339,24 +344,24 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
   }
 
   if (crmCustomerId) {
-    const { data: txns } = await supabaseAdmin
-      .from('crm_revenue_transactions')
-      .select('amount')
-      .eq('crm_customer_id', crmCustomerId)
-      .eq('provider', 'stripe')
-      .eq('status', 'succeeded')
-
-    const total = (txns ?? []).reduce((sum, t) => sum + t.amount, 0)
+    if (customerId) await attachOrphanStripeTransactions([customerId])
+    const ledgerTotal = await stripeLedgerTotal(crmCustomerId)
+    const calculatedTotalRevenue = nextCalculatedTotalRevenue({
+      existingCalculated: customer?.calculated_total_revenue,
+      existingOverride: customer?.total_revenue_override,
+      ledgerTotal,
+      newlyCollectedAmount: !alreadyRecorded ? invoice.amount_paid / 100 : 0,
+    })
     const clientStatus = determineClientStatus({
       userType: customer?.user_type,
-      hasSuccessfulPayment: total > 0,
+      hasSuccessfulPayment: calculatedTotalRevenue > 0,
       hasShopifyRevenue: false,
     })
 
     await supabaseAdmin
       .from('crm_customers')
       .update({
-        calculated_total_revenue: total,
+        calculated_total_revenue: calculatedTotalRevenue,
         last_synced_at: new Date().toISOString(),
         ...(customer?.billing_channel === 'shopify'
           ? {}

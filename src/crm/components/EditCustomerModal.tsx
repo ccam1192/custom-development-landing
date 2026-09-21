@@ -212,7 +212,9 @@ export default function EditCustomerModal({ customer, onClose, onSaved }: EditCu
               />
             </div>
             {revenueIsOverride && (
-              <p className="text-xs text-amber-600 mt-1">⚡ Manual override active</p>
+              <p className="text-xs text-amber-600 mt-1">
+                ⚡ Snapshot floor — live Stripe/Shopify totals can exceed this
+              </p>
             )}
           </div>
 

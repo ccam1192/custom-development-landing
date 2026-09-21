@@ -299,7 +299,7 @@ export function getDisplayMrr(c: CrmCustomer): number {
 }
 
 export function getDisplayRevenue(c: CrmCustomer): number {
-  return c.total_revenue_override ?? c.calculated_total_revenue
+  return Math.max(Number(c.total_revenue_override ?? 0), Number(c.calculated_total_revenue ?? 0))
 }
 
 export function hasMrrOverride(c: CrmCustomer): boolean {
@@ -307,5 +307,8 @@ export function hasMrrOverride(c: CrmCustomer): boolean {
 }
 
 export function hasRevenueOverride(c: CrmCustomer): boolean {
-  return c.total_revenue_override !== null
+  return (
+    c.total_revenue_override != null &&
+    Number(c.total_revenue_override) > Number(c.calculated_total_revenue ?? 0)
+  )
 }

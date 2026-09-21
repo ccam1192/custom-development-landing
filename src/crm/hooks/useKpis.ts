@@ -69,7 +69,9 @@ export function useKpis() {
 
       for (const c of allCustomers) {
         // Use effective columns if available, fall back to coalesce
-        const rev = c.effective_total_revenue ?? c.total_revenue_override ?? c.calculated_total_revenue ?? 0
+        const rev =
+          c.effective_total_revenue ??
+          Math.max(Number(c.total_revenue_override ?? 0), Number(c.calculated_total_revenue ?? 0))
         totalRevenue += rev
         if (rev > 0) lifetimePayingCustomers++
         if (c.client_status === 'canceled' && rev > 0) customerCancellations++

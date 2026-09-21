@@ -173,7 +173,10 @@ export function useCustomers(userId?: string | null): UseCustomersReturn {
         if (totErr) break
         for (const c of totRows ?? []) {
           mrr += Number(c.mrr_override ?? c.calculated_mrr ?? 0)
-          revenue += Number(c.total_revenue_override ?? c.calculated_total_revenue ?? 0)
+          revenue += Math.max(
+            Number(c.total_revenue_override ?? 0),
+            Number(c.calculated_total_revenue ?? 0)
+          )
         }
         if (!totRows || totRows.length < PAGE) break
         fromIdx += PAGE

@@ -1056,14 +1056,22 @@ async function recalcShopifyRevenue(
   const ids = customerIds ?? [...shopifyByCustomer.keys()]
   for (let i = 0; i < ids.length; i += 50) {
     const batch = ids.slice(i, i + 50)
+    const { data: existing } = await supabaseAdmin
+      .from('crm_customers')
+      .select('id, calculated_total_revenue, total_revenue_override')
+      .in('id', batch)
+      .eq('billing_channel', 'shopify')
     await Promise.all(
-      batch.map((id) =>
+      (existing ?? []).map((row) =>
         supabaseAdmin
           .from('crm_customers')
           .update({
-            calculated_total_revenue: shopifyByCustomer.get(id) ?? 0,
+            calculated_total_revenue: Math.max(
+              shopifyByCustomer.get(row.id) ?? 0,
+              Number(row.calculated_total_revenue ?? 0)
+            ),
           })
-          .eq('id', id)
+          .eq('id', row.id)
           .eq('billing_channel', 'shopify')
       )
     )

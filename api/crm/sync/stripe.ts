@@ -13,6 +13,7 @@ import {
   getPaidInvoices,
 } from '../../_lib/stripe.js'
 import { advanceLastPayments, existingProviderTxnIds } from '../../_lib/last-payment.js'
+import { attachOrphanStripeTransactions, nextCalculatedTotalRevenue } from '../../_lib/revenue.js'
 
 export const config = { maxDuration: 300 }
 
@@ -83,6 +84,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const crmStoreUrlById = new Map<string, string | null>()
     const crmSignupById = new Map<string, string | null>()
     const crmStoredRevenueById = new Map<string, number>()
+    const crmCalculatedRevenueById = new Map<string, number>()
+    const crmRevenueOverrideById = new Map<string, number>()
     for (const c of existingCrm) {
       if (c.stripe_customer_id) crmByStripeId.set(c.stripe_customer_id, c.id)
       if (c.email) crmByEmail.set(c.email.toLowerCase().trim(), c.id)
@@ -90,9 +93,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       crmBillingById.set(c.id, c.billing_channel ?? 'none')
       crmStoreUrlById.set(c.id, c.store_url)
       crmSignupById.set(c.id, c.signup_date)
+      crmCalculatedRevenueById.set(c.id, Number(c.calculated_total_revenue ?? 0))
+      crmRevenueOverrideById.set(c.id, Number(c.total_revenue_override ?? 0))
       crmStoredRevenueById.set(
         c.id,
-        Number(c.total_revenue_override ?? c.calculated_total_revenue ?? 0)
+        Math.max(Number(c.total_revenue_override ?? 0), Number(c.calculated_total_revenue ?? 0))
       )
       const domain =
         myshopifyDomainFromUnknown(c.shopify_shop_domain) ?? myshopifyDomainFromUnknown(c.store_url)
@@ -306,7 +311,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           stripe_plan_amount: planAmount,
           stripe_cancel_at: sub?.cancel_at ? new Date(sub.cancel_at * 1000).toISOString() : null,
           stripe_canceled_at: sub?.canceled_at ? new Date(sub.canceled_at * 1000).toISOString() : null,
-          calculated_total_revenue: merged.totalRevenue,
           last_synced_at: new Date().toISOString(),
           billing_channel: 'stripe',
         }
@@ -340,6 +344,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         }
         if (existingId === 'pending') existingId = null
+
+        record.calculated_total_revenue = nextCalculatedTotalRevenue({
+          existingCalculated: existingId ? crmCalculatedRevenueById.get(existingId) : 0,
+          existingOverride: existingId ? crmRevenueOverrideById.get(existingId) : 0,
+          ledgerTotal: merged.totalRevenue,
+        })
 
         const storedRev = existingId ? (crmStoredRevenueById.get(existingId) ?? 0) : 0
         const paid = merged.hasPayment || storedRev > 0
@@ -441,30 +451,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       )
     }
 
-    // Link orphan transactions to newly created customers
-    // (only need this for customers that were just created)
-    const { data: newCustomers } = await supabaseAdmin
-      .from('crm_customers')
-      .select('id, stripe_customer_id')
-      .not('stripe_customer_id', 'is', null)
-      .order('created_at', { ascending: false })
-      .limit(toCreate.length + 10)
-
-    if (newCustomers?.length) {
-      for (let i = 0; i < newCustomers.length; i += 20) {
-        const batch = newCustomers.slice(i, i + 20)
-        await Promise.all(
-          batch.map((c) =>
-            supabaseAdmin
-              .from('crm_revenue_transactions')
-              .update({ crm_customer_id: c.id })
-              .eq('provider', 'stripe')
-              .eq('provider_customer_id', c.stripe_customer_id!)
-              .is('crm_customer_id', null)
-          )
-        )
-      }
-    }
+    const stripeIdsToAttach = [
+      ...new Set(allMerged.flatMap((merged) => merged.allIds).filter(Boolean)),
+    ]
+    await attachOrphanStripeTransactions(stripeIdsToAttach)
 
     console.log(`[Stripe Sync] Done: ${processed} processed, ${created} created, ${updated} updated, ${errors} errors`)
 
