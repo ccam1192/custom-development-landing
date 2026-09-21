@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronUp,
   ChevronDown,
@@ -76,18 +76,42 @@ function CopyEmailButton({ email }: { email: string }) {
   const [copied, setCopied] = useState(false)
   return (
     <button
+      type="button"
       onClick={(e) => {
         e.stopPropagation()
         navigator.clipboard.writeText(email)
         setCopied(true)
         setTimeout(() => setCopied(false), 1500)
       }}
+      onPointerDown={(e) => e.stopPropagation()}
       className="ml-1 p-0.5 text-gray-400 hover:text-primary transition-colors"
       title="Copy email"
     >
       {copied ? <Check size={12} className="text-green-500" /> : <Copy size={12} />}
     </button>
   )
+}
+
+function emailsInRange(
+  customers: CrmCustomer[],
+  range: { start: number; end: number }
+): string[] {
+  const lo = Math.min(range.start, range.end)
+  const hi = Math.max(range.start, range.end)
+  const emails: string[] = []
+  for (let i = lo; i <= hi; i++) {
+    const email = customers[i]?.email?.trim()
+    if (email) emails.push(email)
+  }
+  return emails
+}
+
+function emailIndexFromPoint(clientX: number, clientY: number): number | null {
+  const el = document.elementFromPoint(clientX, clientY)
+  const cell = el?.closest('[data-email-row]')
+  if (!cell) return null
+  const idx = Number(cell.getAttribute('data-email-row'))
+  return Number.isInteger(idx) ? idx : null
 }
 
 function widthFor(col: GridColumnDef, widths: Partial<Record<GridColumnId, number>>): number {
@@ -119,8 +143,99 @@ export default function CustomerTable({
 }: CustomerTableProps) {
   const [openFilter, setOpenFilter] = useState<GridColumnId | null>(null)
   const [dragOverId, setDragOverId] = useState<GridColumnId | null>(null)
+  const [emailRange, setEmailRange] = useState<{ start: number; end: number } | null>(null)
+  const [copyFlash, setCopyFlash] = useState<string | null>(null)
   const resizing = useRef<{ id: GridColumnId; startX: number; startW: number } | null>(null)
   const dragId = useRef<GridColumnId | null>(null)
+  const draggingEmails = useRef(false)
+  const suppressRowClick = useRef(false)
+  const emailRangeRef = useRef(emailRange)
+  const customersRef = useRef(customers)
+  emailRangeRef.current = emailRange
+  customersRef.current = customers
+
+  useEffect(() => {
+    setEmailRange(null)
+  }, [pagination.page, pagination.pageSize, customers[0]?.id, customers.length])
+
+  useEffect(() => {
+    function onMove(e: PointerEvent) {
+      if (!draggingEmails.current) return
+      const idx = emailIndexFromPoint(e.clientX, e.clientY)
+      if (idx == null) return
+      suppressRowClick.current = true
+      setEmailRange((range) => (range ? { ...range, end: idx } : { start: idx, end: idx }))
+    }
+    function onUp() {
+      draggingEmails.current = false
+    }
+    function copySelectedEmails() {
+      const range = emailRangeRef.current
+      if (!range) return false
+      const emails = emailsInRange(customersRef.current, range)
+      if (emails.length === 0) return false
+      const text = emails.join('\n')
+      void navigator.clipboard.writeText(text)
+      const label = emails.length === 1 ? 'Copied 1 email' : `Copied ${emails.length} emails`
+      setCopyFlash(label)
+      window.setTimeout(() => setCopyFlash((current) => (current === label ? null : current)), 1500)
+      return text
+    }
+    function onCopy(e: ClipboardEvent) {
+      const range = emailRangeRef.current
+      if (!range) return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return
+      }
+      const native = window.getSelection()?.toString().trim()
+      if (native) return
+      const text = copySelectedEmails()
+      if (!text) return
+      e.preventDefault()
+      e.clipboardData?.setData('text/plain', text)
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setEmailRange(null)
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C')) {
+        const target = e.target as HTMLElement | null
+        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+          return
+        }
+        if (window.getSelection()?.toString().trim()) return
+        if (copySelectedEmails()) e.preventDefault()
+      }
+    }
+    function onPointerDown(e: PointerEvent) {
+      if ((e.target as HTMLElement | null)?.closest('[data-email-row]')) return
+      setEmailRange(null)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+    document.addEventListener('copy', onCopy)
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('pointerdown', onPointerDown)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      document.removeEventListener('copy', onCopy)
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('pointerdown', onPointerDown)
+    }
+  }, [])
+
+  function beginEmailSelect(e: React.PointerEvent, index: number) {
+    if ((e.target as HTMLElement).closest('button')) return
+    e.preventDefault()
+    e.stopPropagation()
+    draggingEmails.current = true
+    suppressRowClick.current = false
+    setEmailRange((range) =>
+      e.shiftKey && range ? { start: range.start, end: index } : { start: index, end: index }
+    )
+  }
 
   const columns = useMemo(() => {
     const visible = new Set(visibleColumns)
@@ -140,6 +255,12 @@ export default function CustomerTable({
   const totalPages = Math.max(1, Math.ceil(pagination.total / pagination.pageSize))
   const from = pagination.total === 0 ? 0 : (pagination.page - 1) * pagination.pageSize + 1
   const to = Math.min(pagination.page * pagination.pageSize, pagination.total)
+  const selectedEmailCount = emailRange ? emailsInRange(customers, emailRange).length : 0
+  const emailHint =
+    copyFlash ??
+    (selectedEmailCount > 0
+      ? `${selectedEmailCount} email${selectedEmailCount === 1 ? '' : 's'} selected · ⌘C / Ctrl+C to copy`
+      : null)
 
   function handleResizeStart(e: React.PointerEvent, col: GridColumnDef) {
     e.preventDefault()
@@ -179,8 +300,8 @@ export default function CustomerTable({
         return <span className="font-medium text-gray-900 truncate block">{c.name ?? '—'}</span>
       case 'email':
         return (
-          <div className="flex items-center gap-1 min-w-0" onClick={(e) => e.stopPropagation()}>
-            <span className="text-gray-600 truncate select-text">{c.email ?? '—'}</span>
+          <div className="flex items-center gap-1 min-w-0 select-none">
+            <span className="text-gray-600 truncate">{c.email ?? '—'}</span>
             {c.email && <CopyEmailButton email={c.email} />}
           </div>
         )
@@ -245,7 +366,7 @@ export default function CustomerTable({
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden flex flex-col">
+    <div className="relative bg-white rounded-xl border border-gray-200 overflow-hidden flex flex-col">
       <div className="overflow-auto min-h-[28rem] h-[calc(100vh-385px)] crm-scrollbar">
         <table className="text-sm table-fixed" style={{ width: tableWidth, minWidth: tableWidth }}>
           <colgroup>
@@ -372,13 +493,24 @@ export default function CustomerTable({
               </tr>
             )}
             {!loading &&
-              customers.map((c) => (
+              customers.map((c, rowIndex) => {
+                const emailSelected =
+                  emailRange != null &&
+                  rowIndex >= Math.min(emailRange.start, emailRange.end) &&
+                  rowIndex <= Math.max(emailRange.start, emailRange.end)
+                return (
                 <tr
                   key={c.id}
                   className={`hover:bg-gray-50/70 transition-colors cursor-pointer ${
                     selectedIds.has(c.id) ? 'bg-primary/5' : ''
                   }`}
-                  onClick={() => onView(c)}
+                  onClick={() => {
+                    if (suppressRowClick.current) {
+                      suppressRowClick.current = false
+                      return
+                    }
+                    onView(c)
+                  }}
                 >
                   <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                     <input
@@ -392,7 +524,21 @@ export default function CustomerTable({
                   {columns.map((col) => (
                     <td
                       key={col.id}
-                      className={`px-2 py-2.5 overflow-hidden ${col.align === 'right' ? 'text-right' : ''}`}
+                      data-email-row={col.id === 'email' ? rowIndex : undefined}
+                      aria-selected={col.id === 'email' ? emailSelected : undefined}
+                      onPointerDown={
+                        col.id === 'email' ? (e) => beginEmailSelect(e, rowIndex) : undefined
+                      }
+                      onClick={
+                        col.id === 'email'
+                          ? (e) => {
+                              e.stopPropagation()
+                            }
+                          : undefined
+                      }
+                      className={`px-2 py-2.5 overflow-hidden ${col.align === 'right' ? 'text-right' : ''} ${
+                        col.id === 'email' ? 'cursor-cell' : ''
+                      } ${col.id === 'email' && emailSelected ? 'bg-sky-100' : ''}`}
                     >
                       {renderCell(col, c)}
                     </td>
@@ -406,10 +552,22 @@ export default function CustomerTable({
                     />
                   </td>
                 </tr>
-              ))}
+                )
+              })}
           </tbody>
         </table>
       </div>
+
+      {emailHint && (
+        <>
+          <div className="sr-only" aria-live="polite">
+            {emailHint}
+          </div>
+          <div className="absolute right-4 bottom-16 z-20 rounded-md bg-gray-900 px-2.5 py-1 text-xs text-white shadow">
+            {emailHint}
+          </div>
+        </>
+      )}
 
       <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200 bg-gray-50/50">
         <div className="flex items-center gap-4 text-sm text-gray-500 flex-wrap">
