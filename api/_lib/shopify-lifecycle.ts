@@ -437,7 +437,10 @@ export function deriveShopifyLifecycle(input: {
     lifecycle,
     shopifyStatus,
     trialEndsAt: activeSub?.trialEndsAt ?? null,
-    cancelledAt: canceledEvent?.occurredAt ?? (lifecycle === 'CANCELED' ? latest?.occurredAt ?? null : null),
+    cancelledAt:
+      canceledEvent?.occurredAt ??
+      (lifecycle === 'CANCELLATION_SCHEDULED' ? scheduledEvent?.occurredAt ?? null : null) ??
+      (lifecycle === 'CANCELED' ? latest?.occurredAt ?? scheduledEvent?.occurredAt ?? null : null),
     cancelEffectiveOn:
       scheduledEvent?.cancelEffectiveOn ??
       canceledEvent?.cancelEffectiveOn ??
@@ -714,17 +717,19 @@ export function shopifyCustomerUpdateFromLifecycle(input: {
     calculatedMrr = Number(input.customer.calculated_mrr)
   }
 
+  const existingCancel =
+    input.customer.cancellation_date &&
+    new Date(input.customer.cancellation_date).getTime() <= Date.now()
+      ? input.customer.cancellation_date
+      : null
   const cancellationDate =
     nextStatus === 'canceled'
       ? input.derived.lifecycle === 'FROZEN'
-        ? input.derived.freezeOccurredAt ?? input.derived.cancelledAt ?? input.customer.cancellation_date
-        : input.derived.cancelEffectiveOn ??
-          input.derived.cancelledAt ??
-          input.derived.freezeOccurredAt ??
-          input.customer.cancellation_date
+        ? input.derived.freezeOccurredAt ?? input.derived.cancelledAt ?? existingCancel
+        : input.derived.cancelledAt ?? input.derived.freezeOccurredAt ?? existingCancel
       : nextStatus === 'active_customer' || nextStatus === 'in_trial'
         ? null
-        : input.customer.cancellation_date
+        : existingCancel ?? input.customer.cancellation_date
 
   const record: Record<string, unknown> = {
     ...metadata,

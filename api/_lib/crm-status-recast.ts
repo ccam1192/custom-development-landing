@@ -107,6 +107,12 @@ function isoDate(value: string | null | undefined): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString()
 }
 
+function isFuture(value: string | null | undefined): boolean {
+  if (!value) return false
+  const ms = new Date(value).getTime()
+  return Number.isFinite(ms) && ms > Date.now()
+}
+
 function sameInstant(a: string | null | undefined, b: string | null | undefined): boolean {
   if (!a && !b) return true
   if (!a || !b) return false
@@ -169,6 +175,10 @@ export async function recastCrmClientStatuses(supabase: SupabaseClient): Promise
   const freezeByShop = new Map<string, string>()
   const unfrozenByCustomer = new Map<string, string>()
   const unfrozenByShop = new Map<string, string>()
+  const canceledByCustomer = new Map<string, string>()
+  const canceledByShop = new Map<string, string>()
+  const scheduledByCustomer = new Map<string, string>()
+  const scheduledByShop = new Map<string, string>()
   for (const e of freezeEvents) {
     if (e.event_type === 'SUBSCRIPTION_FROZEN') {
       if (e.crm_customer_id) keepLatest(freezeByCustomer, e.crm_customer_id, e.occurred_at)
@@ -177,6 +187,14 @@ export async function recastCrmClientStatuses(supabase: SupabaseClient): Promise
     if (e.event_type === 'SUBSCRIPTION_UNFROZEN') {
       if (e.crm_customer_id) keepLatest(unfrozenByCustomer, e.crm_customer_id, e.occurred_at)
       if (e.shopify_shop_id) keepLatest(unfrozenByShop, e.shopify_shop_id, e.occurred_at)
+    }
+    if (e.event_type === 'SUBSCRIPTION_CANCELED') {
+      if (e.crm_customer_id) keepLatest(canceledByCustomer, e.crm_customer_id, e.occurred_at)
+      if (e.shopify_shop_id) keepLatest(canceledByShop, e.shopify_shop_id, e.occurred_at)
+    }
+    if (e.event_type === 'SUBSCRIPTION_CANCELLATION_SCHEDULED') {
+      if (e.crm_customer_id) keepLatest(scheduledByCustomer, e.crm_customer_id, e.occurred_at)
+      if (e.shopify_shop_id) keepLatest(scheduledByShop, e.shopify_shop_id, e.occurred_at)
     }
   }
 
@@ -268,12 +286,21 @@ export async function recastCrmClientStatuses(supabase: SupabaseClient): Promise
         const freezeIsCurrent =
           lifecycle === 'FROZEN' ||
           (!!freezeAt && (!unfrozenAt || new Date(freezeAt).getTime() > new Date(unfrozenAt).getTime()))
-        cancellationDate =
-          isoDate(
-            freezeIsCurrent
-              ? freezeAt ?? c.shopify_cancelled_at ?? c.cancellation_date
-              : c.shopify_cancelled_at ?? c.cancellation_date ?? freezeAt
-          )
+        const canceledAt =
+          canceledByCustomer.get(c.id) ??
+          (c.shopify_shop_id ? canceledByShop.get(c.shopify_shop_id) : undefined) ??
+          c.shopify_cancelled_at ??
+          null
+        const scheduledAt =
+          scheduledByCustomer.get(c.id) ??
+          (c.shopify_shop_id ? scheduledByShop.get(c.shopify_shop_id) : undefined) ??
+          null
+        const existingCancel = isFuture(c.cancellation_date) ? null : c.cancellation_date
+        cancellationDate = isoDate(
+          freezeIsCurrent
+            ? freezeAt ?? canceledAt ?? scheduledAt ?? existingCancel
+            : canceledAt ?? scheduledAt ?? existingCancel ?? freezeAt
+        )
       } else if (nextStatus === 'active_customer' || nextStatus === 'in_trial') {
         cancellationDate = null
       }

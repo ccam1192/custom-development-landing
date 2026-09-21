@@ -52,6 +52,7 @@ const EVENT_WINDOW_DAYS = 365
 const MAX_LOOKBACK_DAYS = 365 * 8
 const DAY_MS = 24 * 60 * 60 * 1000
 const OVERLAP_MS = 5 * 60 * 1000
+const TRANSACTION_CATCHUP_DAYS = 45
 
 export type ShopifySyncMode = 'initial' | 'delta'
 
@@ -350,6 +351,8 @@ async function executeShopifySync(mode: ShopifySyncMode): Promise<ShopifySyncRes
         if (done) cursor.phase = 'finalize'
         else break
       } else {
+        await catchUpRecentTransactions(cursor, index, errorDetails)
+        await catchUpRecentUsageCharges(cursor, index, errorDetails)
         const customerIds =
           mode === 'delta'
             ? uniqueCustomerIds(index, cursor.affectedShops)
@@ -638,21 +641,92 @@ async function runEventsPhase(
   return cursor.windowIndex >= windows.length
 }
 
+async function ingestTransactionPage(
+  transactions: ShopifyTransaction[],
+  cursor: ShopifySyncCursor,
+  index: ShopifyCustomerIndex,
+  errorDetails: Array<{ message: string; record?: string }>
+) {
+  const rows = []
+  for (const tx of transactions) {
+    cursor.stats.txnProcessed++
+    const shopId = shopGidNumeric(tx.shop?.id)
+    const domain = normalizeShopDomain(tx.shop?.myshopifyDomain)
+    if (!shopId && !domain) {
+      cursor.stats.skippedMissingIds++
+      rows.push(toTxnRow(tx, null))
+      continue
+    }
+    const shop = { shopId: shopId ?? '', domain, name: tx.shop?.name ?? null }
+    addAffectedShop(cursor, shop)
+    try {
+      const result = await findOrCreateShopifyCustomer(index, shop, null)
+      if (result.created) cursor.stats.customersCreated++
+      const attachId = result.skippedStripe ? null : result.customer?.id ?? null
+      if (result.skippedStripe) {
+        console.log(
+          `[Shopify Sync] Preserving Stripe billing authority; not attaching Shopify revenue for ${shop.domain ?? shop.shopId}`
+        )
+      }
+      rows.push(toTxnRow(tx, attachId))
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      errorDetails.push({ message, record: domain ?? shopId ?? undefined })
+      rows.push(toTxnRow(tx, null))
+    }
+  }
+
+  for (let i = 0; i < rows.length; i += 200) {
+    const batch = rows.slice(i, i + 200)
+    const already = await existingProviderTxnIds(
+      'shopify',
+      batch.map((row) => String(row.provider_transaction_id ?? ''))
+    )
+    const toWrite = batch.filter((row) => {
+      const id = String(row.provider_transaction_id ?? '')
+      if (!already.has(id)) return true
+      return !!row.crm_customer_id
+    })
+    if (toWrite.length === 0) continue
+    const { error: upsertErr } = await supabaseAdmin
+      .from('crm_revenue_transactions')
+      .upsert(toWrite, { onConflict: 'provider,provider_transaction_id' })
+    if (upsertErr) {
+      errorDetails.push({ message: `Upsert batch: ${upsertErr.message}` })
+    } else {
+      cursor.stats.txnUpserted += toWrite.length
+      await advanceLastPayments(
+        toWrite
+          .filter(
+            (row) =>
+              isCollectedShopifyPayment(row) && !already.has(String(row.provider_transaction_id ?? ''))
+          )
+          .map((row) => ({
+            customerId: String(row.crm_customer_id),
+            paymentAt: String(row.transaction_date),
+            provider: 'shopify' as const,
+          }))
+      )
+    }
+  }
+}
+
 async function runTransactionsPhase(
   cursor: ShopifySyncCursor,
   index: ShopifyCustomerIndex,
   errorDetails: Array<{ message: string; record?: string }>,
   started: number
 ): Promise<boolean> {
+  // Never cap createdAtMax — sales that land while a long job is running
+  // (or during the frozen syncTo window) must still be ingested.
   const createdAtMin = cursor.mode === 'delta' ? cursor.syncFrom : undefined
-  const createdAtMax = cursor.mode === 'delta' ? cursor.syncTo : undefined
 
   while (Date.now() - started < SHOPIFY_SYNC_TIME_BUDGET_MS) {
     if (cursor.txnCursor) await partnerRateLimitPause()
 
     let page
     try {
-      page = await getAppTransactions(cursor.txnCursor, createdAtMin, createdAtMax)
+      page = await getAppTransactions(cursor.txnCursor, createdAtMin)
     } catch (e) {
       cursor.stats.apiErrors++
       const message = e instanceof Error ? e.message : String(e)
@@ -661,62 +735,7 @@ async function runTransactionsPhase(
       throw e
     }
 
-    const rows = []
-    for (const tx of page.transactions) {
-      cursor.stats.txnProcessed++
-      const shopId = shopGidNumeric(tx.shop?.id)
-      const domain = normalizeShopDomain(tx.shop?.myshopifyDomain)
-      if (!shopId && !domain) {
-        cursor.stats.skippedMissingIds++
-        rows.push(toTxnRow(tx, null))
-        continue
-      }
-      const shop = { shopId: shopId ?? '', domain, name: tx.shop?.name ?? null }
-      addAffectedShop(cursor, shop)
-      try {
-        const result = await findOrCreateShopifyCustomer(index, shop, null)
-        if (result.created) cursor.stats.customersCreated++
-        const attachId = result.skippedStripe ? null : result.customer?.id ?? null
-        if (result.skippedStripe) {
-          console.log(
-            `[Shopify Sync] Preserving Stripe billing authority; not attaching Shopify revenue for ${shop.domain ?? shop.shopId}`
-          )
-        }
-        rows.push(toTxnRow(tx, attachId))
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e)
-        errorDetails.push({ message, record: domain ?? shopId ?? undefined })
-        rows.push(toTxnRow(tx, null))
-      }
-    }
-
-    for (let i = 0; i < rows.length; i += 200) {
-      const batch = rows.slice(i, i + 200)
-      const already = await existingProviderTxnIds(
-        'shopify',
-        batch.map((row) => String(row.provider_transaction_id ?? ''))
-      )
-      const { error: upsertErr } = await supabaseAdmin
-        .from('crm_revenue_transactions')
-        .upsert(batch, { onConflict: 'provider,provider_transaction_id' })
-      if (upsertErr) {
-        errorDetails.push({ message: `Upsert batch: ${upsertErr.message}` })
-      } else {
-        cursor.stats.txnUpserted += batch.length
-        await advanceLastPayments(
-          batch
-            .filter(
-              (row) =>
-                isCollectedShopifyPayment(row) && !already.has(String(row.provider_transaction_id ?? ''))
-            )
-            .map((row) => ({
-              customerId: String(row.crm_customer_id),
-              paymentAt: String(row.transaction_date),
-              provider: 'shopify' as const,
-            }))
-        )
-      }
-    }
+    await ingestTransactionPage(page.transactions, cursor, index, errorDetails)
 
     cursor.txnCursor = page.cursor
     cursor.txnPages = (cursor.txnPages ?? 0) + 1
@@ -729,6 +748,33 @@ async function runTransactionsPhase(
   }
 
   return false
+}
+
+async function catchUpRecentTransactions(
+  cursor: ShopifySyncCursor,
+  index: ShopifyCustomerIndex,
+  errorDetails: Array<{ message: string; record?: string }>
+) {
+  const createdAtMin = new Date(Date.now() - TRANSACTION_CATCHUP_DAYS * DAY_MS).toISOString()
+  let after: string | null = null
+  let pages = 0
+  for (;;) {
+    if (pages) await partnerRateLimitPause()
+    let page
+    try {
+      page = await getAppTransactions(after, createdAtMin)
+    } catch (e) {
+      cursor.stats.apiErrors++
+      const message = e instanceof Error ? e.message : String(e)
+      errorDetails.push({ message: `transaction catch-up: ${message}` })
+      console.error('[Shopify Sync] transaction catch-up error:', message)
+      throw e
+    }
+    await ingestTransactionPage(page.transactions, cursor, index, errorDetails)
+    pages++
+    if (!page.hasNextPage || !page.cursor || pages > 20) break
+    after = page.cursor
+  }
 }
 
 function rememberUsageChargeShop(cursor: ShopifySyncCursor, shop: ShopifyShopRef) {
@@ -745,6 +791,39 @@ function shopHasUsageChargeEvidence(cursor: ShopifySyncCursor, shop: ShopifyShop
   return !!domain && cursor.usageChargeShopKeys.includes(`domain:${domain}`)
 }
 
+async function ingestUsageChargePage(
+  events: Array<{
+    occurredAt: string
+    chargeId: string
+    shop: { id: string; myshopifyDomain: string; name: string } | null
+  }>,
+  cursor: ShopifySyncCursor,
+  index: ShopifyCustomerIndex
+) {
+  const toMark: string[] = []
+  for (const event of events) {
+    cursor.stats.usageChargeEventsProcessed++
+    const shopId = shopGidNumeric(event.shop?.id)
+    const domain = normalizeShopDomain(event.shop?.myshopifyDomain)
+    if (!shopId && !domain) {
+      cursor.stats.skippedMissingIds++
+      continue
+    }
+    const shop = { shopId: shopId ?? '', domain, name: event.shop?.name ?? null }
+    addAffectedShop(cursor, shop)
+    rememberUsageChargeShop(cursor, shop)
+    const customer = index.find(shop.shopId, null, shop.domain)
+    if (!customer || isStripeAuthoritative(customer.billing_channel)) continue
+    if (customer.usage_charge_applied) continue
+    toMark.push(customer.id)
+    customer.usage_charge_applied = true
+    index.add(customer)
+  }
+
+  const marked = await markUsageChargeApplied(toMark)
+  cursor.stats.usageChargeMarked += marked
+}
+
 async function runUsageChargesPhase(
   cursor: ShopifySyncCursor,
   index: ShopifyCustomerIndex,
@@ -752,14 +831,13 @@ async function runUsageChargesPhase(
   started: number
 ): Promise<boolean> {
   const occurredAtMin = cursor.syncFrom
-  const occurredAtMax = cursor.syncTo
 
   while (Date.now() - started < SHOPIFY_SYNC_TIME_BUDGET_MS) {
     if (cursor.usageChargeAfter) await partnerRateLimitPause()
 
     let page
     try {
-      page = await getUsageChargeAppliedEvents(cursor.usageChargeAfter, occurredAtMin, occurredAtMax)
+      page = await getUsageChargeAppliedEvents(cursor.usageChargeAfter, occurredAtMin)
     } catch (e) {
       cursor.stats.apiErrors++
       const message = e instanceof Error ? e.message : String(e)
@@ -768,28 +846,7 @@ async function runUsageChargesPhase(
       throw e
     }
 
-    const toMark: string[] = []
-    for (const event of page.events) {
-      cursor.stats.usageChargeEventsProcessed++
-      const shopId = shopGidNumeric(event.shop?.id)
-      const domain = normalizeShopDomain(event.shop?.myshopifyDomain)
-      if (!shopId && !domain) {
-        cursor.stats.skippedMissingIds++
-        continue
-      }
-      const shop = { shopId: shopId ?? '', domain, name: event.shop?.name ?? null }
-      addAffectedShop(cursor, shop)
-      rememberUsageChargeShop(cursor, shop)
-      const customer = index.find(shop.shopId, null, shop.domain)
-      if (!customer || isStripeAuthoritative(customer.billing_channel)) continue
-      if (customer.usage_charge_applied) continue
-      toMark.push(customer.id)
-      customer.usage_charge_applied = true
-      index.add(customer)
-    }
-
-    const marked = await markUsageChargeApplied(toMark)
-    cursor.stats.usageChargeMarked += marked
+    await ingestUsageChargePage(page.events, cursor, index)
 
     cursor.usageChargeAfter = page.cursor
     cursor.usageChargePages = (cursor.usageChargePages ?? 0) + 1
@@ -802,6 +859,33 @@ async function runUsageChargesPhase(
   }
 
   return false
+}
+
+async function catchUpRecentUsageCharges(
+  cursor: ShopifySyncCursor,
+  index: ShopifyCustomerIndex,
+  errorDetails: Array<{ message: string; record?: string }>
+) {
+  const occurredAtMin = new Date(Date.now() - TRANSACTION_CATCHUP_DAYS * DAY_MS).toISOString()
+  let after: string | null = null
+  let pages = 0
+  for (;;) {
+    if (pages) await partnerRateLimitPause()
+    let page
+    try {
+      page = await getUsageChargeAppliedEvents(after, occurredAtMin)
+    } catch (e) {
+      cursor.stats.apiErrors++
+      const message = e instanceof Error ? e.message : String(e)
+      errorDetails.push({ message: `usageCharge catch-up: ${message}` })
+      console.error('[Shopify Sync] usageCharge catch-up error:', message)
+      throw e
+    }
+    await ingestUsageChargePage(page.events, cursor, index)
+    pages++
+    if (!page.hasNextPage || !page.cursor || pages > 20) break
+    after = page.cursor
+  }
 }
 
 async function runLifecyclePhase(
