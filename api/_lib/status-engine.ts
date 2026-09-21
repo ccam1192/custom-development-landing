@@ -132,10 +132,17 @@ export function determineShopifyClientStatus(input: {
   })
 }
 
+/**
+ * Shopify MRR while the subscription is ACTIVE.
+ * Prefers a positive FlatRatePrice (annual / 12, or every-30-days as-is).
+ * Boardroom bills via usage charges, so when there is no positive flat rate,
+ * the latest succeeded AppUsageSale is current MRR until cancel/freeze/trial.
+ */
 export function shopifyFlatRateMrr(input: {
   lifecycle: ShopifyLifecycleState
   billingPeriod?: string | null
   flatRateAmount?: number | null
+  usageAmount?: number | null
 }): number {
   if (
     input.lifecycle === 'CANCELED' ||
@@ -146,9 +153,12 @@ export function shopifyFlatRateMrr(input: {
   ) {
     return 0
   }
-  if (!input.flatRateAmount || input.flatRateAmount <= 0) return 0
-  if (input.billingPeriod === 'ANNUAL') return input.flatRateAmount / 12
-  if (input.billingPeriod === 'EVERY_30_DAYS') return input.flatRateAmount
+  if (input.flatRateAmount && input.flatRateAmount > 0) {
+    if (input.billingPeriod === 'ANNUAL') return input.flatRateAmount / 12
+    if (input.billingPeriod === 'EVERY_30_DAYS') return input.flatRateAmount
+    return 0
+  }
+  if (input.usageAmount && input.usageAmount > 0) return input.usageAmount
   return 0
 }
 

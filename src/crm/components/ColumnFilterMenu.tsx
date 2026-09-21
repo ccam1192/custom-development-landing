@@ -25,6 +25,7 @@ const DATE_OPS: Array<{ value: DateFilterOp; label: string }> = [
   { value: 'on_or_before', label: 'On or before' },
   { value: 'on_or_after', label: 'On or after' },
   { value: 'between', label: 'Is between' },
+  { value: 'older_than_days', label: 'At least N days ago' },
   { value: 'empty', label: 'Is empty' },
   { value: 'not_empty', label: 'Is not empty' },
 ]
@@ -119,9 +120,16 @@ export default function ColumnFilterMenu({ column, filter, onChange, onClose }: 
             <select
               className="mt-1 w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm"
               value={current.op}
-              onChange={(e) =>
-                onChange({ kind: 'date', op: e.target.value as DateFilterOp, value: current.value, valueTo: current.valueTo })
-              }
+              onChange={(e) => {
+                const op = e.target.value as DateFilterOp
+                const keepValue = op !== 'older_than_days' && current.op !== 'older_than_days'
+                onChange({
+                  kind: 'date',
+                  op,
+                  value: keepValue ? current.value : null,
+                  valueTo: current.valueTo,
+                })
+              }}
             >
               {DATE_OPS.map((op) => (
                 <option key={op.value} value={op.value}>
@@ -130,12 +138,32 @@ export default function ColumnFilterMenu({ column, filter, onChange, onClose }: 
               ))}
             </select>
           </label>
-          {current.op !== 'empty' && current.op !== 'not_empty' && (
+          {current.op !== 'empty' && current.op !== 'not_empty' && current.op !== 'older_than_days' && (
             <label className="block text-xs font-medium text-gray-500">
               {current.op === 'between' ? 'From' : 'Date'}
               <input
                 type="date"
                 className="mt-1 w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm"
+                value={current.value ?? ''}
+                onChange={(e) =>
+                  onChange({
+                    kind: 'date',
+                    op: current.op,
+                    value: e.target.value || null,
+                    valueTo: current.valueTo,
+                  })
+                }
+              />
+            </label>
+          )}
+          {current.op === 'older_than_days' && (
+            <label className="block text-xs font-medium text-gray-500">
+              Days
+              <input
+                type="number"
+                min={0}
+                className="mt-1 w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm"
+                placeholder="7"
                 value={current.value ?? ''}
                 onChange={(e) =>
                   onChange({

@@ -48,6 +48,7 @@ type TxnRow = {
   status: string
   transaction_type: string
   shopify_gross_amount: number | null
+  transaction_date: string | null
 }
 
 export type RecastSummary = {
@@ -126,7 +127,7 @@ export async function recastCrmClientStatuses(supabase: SupabaseClient): Promise
   const txns = await fetchAll<TxnRow>(
     supabase,
     'crm_revenue_transactions',
-    'crm_customer_id, provider, amount, status, transaction_type, shopify_gross_amount'
+    'crm_customer_id, provider, amount, status, transaction_type, shopify_gross_amount, transaction_date'
   )
   const freezeEvents = await fetchAll<{
     crm_customer_id: string | null
@@ -141,6 +142,7 @@ export async function recastCrmClientStatuses(supabase: SupabaseClient): Promise
 
   const stripeByCustomer = new Map<string, number>()
   const shopifyByCustomer = new Map<string, number>()
+  const latestUsageByCustomer = new Map<string, { at: number; amount: number }>()
   for (const t of txns) {
     if (!t.crm_customer_id) continue
     if (t.status !== 'succeeded' && t.status !== 'adjusted') continue
@@ -152,6 +154,14 @@ export async function recastCrmClientStatuses(supabase: SupabaseClient): Promise
         t.crm_customer_id,
         (shopifyByCustomer.get(t.crm_customer_id) ?? 0) + shopifyLedgerDelta(t)
       )
+      if (t.status === 'succeeded' && t.transaction_type === 'app_usage_sale') {
+        const amount = Number(t.amount)
+        const at = t.transaction_date ? new Date(t.transaction_date).getTime() : 0
+        if (Number.isFinite(amount) && amount > 0 && Number.isFinite(at)) {
+          const prev = latestUsageByCustomer.get(t.crm_customer_id)
+          if (!prev || at >= prev.at) latestUsageByCustomer.set(t.crm_customer_id, { at, amount })
+        }
+      }
     }
   }
 
@@ -277,6 +287,7 @@ export async function recastCrmClientStatuses(supabase: SupabaseClient): Promise
           lifecycle,
           billingPeriod: c.shopify_billing_interval,
           flatRateAmount: c.shopify_subscription_amount,
+          usageAmount: latestUsageByCustomer.get(c.id)?.amount ?? null,
         })
         const keepExisting =
           nextMrr <= 0 && lifecycle === 'ACTIVE' && Number(c.calculated_mrr ?? 0) > 0

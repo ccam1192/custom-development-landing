@@ -70,6 +70,26 @@ export const GRID_COLUMNS: GridColumnDef[] = [
     })),
   },
   {
+    id: 'usage_charge_applied',
+    label: 'Usage Charge Applied',
+    sortField: 'usage_charge_applied',
+    filterKind: 'enum',
+    defaultWidth: 160,
+    minWidth: 120,
+    enumOptions: [
+      { value: 'true', label: 'Yes' },
+      { value: 'false', label: 'No' },
+    ],
+  },
+  {
+    id: 'shopify_subscription_created_at',
+    label: 'Free Trial Started',
+    sortField: 'shopify_subscription_created_at',
+    filterKind: 'date',
+    defaultWidth: 150,
+    minWidth: 110,
+  },
+  {
     id: 'last_payment',
     label: 'Last Payment',
     sortField: 'last_payment',

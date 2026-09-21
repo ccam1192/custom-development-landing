@@ -70,6 +70,7 @@ export interface CrmCustomer {
   client_status: ClientStatus
   cancellation_date: string | null
   last_payment: string | null
+  usage_charge_applied: boolean
   calculated_mrr: number
   mrr_override: number | null
   calculated_total_revenue: number
@@ -212,6 +213,7 @@ export type DateFilterOp =
   | 'on_or_before'
   | 'on_or_after'
   | 'between'
+  | 'older_than_days'
   | 'empty'
   | 'not_empty'
 
@@ -234,6 +236,8 @@ export type GridColumnId =
   | 'user_type'
   | 'billing_channel'
   | 'client_status'
+  | 'usage_charge_applied'
+  | 'shopify_subscription_created_at'
   | 'cancellation_date'
   | 'last_payment'
   | 'effective_mrr'

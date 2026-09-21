@@ -41,6 +41,10 @@ export default function ExportButton({ filters, search, mode }: ExportButtonProp
         'User Type': c.user_type,
         'Billing Channel': c.billing_channel,
         'Client Status': c.client_status,
+        'Usage Charge Applied': c.usage_charge_applied ? 'Yes' : 'No',
+        'Free Trial Started': c.shopify_subscription_created_at
+          ? new Date(c.shopify_subscription_created_at).toISOString().split('T')[0]
+          : '',
         'Last Payment': c.last_payment ? new Date(c.last_payment).toISOString().split('T')[0] : '',
         'Cancellation Date': c.cancellation_date ? new Date(c.cancellation_date).toISOString().split('T')[0] : '',
         'MRR': c.mrr_override ?? c.calculated_mrr,

@@ -36,6 +36,7 @@ export type CrmShopifyCustomer = {
   stripe_customer_id?: string | null
   calculated_total_revenue?: number | null
   calculated_mrr?: number | null
+  usage_charge_applied?: boolean | null
 }
 
 export type ShopifyShopRef = {
@@ -61,7 +62,7 @@ export type DerivedShopifyLifecycle = {
 }
 
 const CUSTOMER_COLUMNS =
-  'id, billing_channel, client_status, user_type, shopify_shop_id, shopify_shop_domain, shopify_subscription_id, shopify_subscription_created_at, shopify_trial_ends_at, shopify_cancelled_at, shopify_cancel_effective_on, store_url, mrr_override, total_revenue_override, cancellation_date, signup_date, notes, name, email, stripe_customer_id, calculated_total_revenue, calculated_mrr'
+  'id, billing_channel, client_status, user_type, shopify_shop_id, shopify_shop_domain, shopify_subscription_id, shopify_subscription_created_at, shopify_trial_ends_at, shopify_cancelled_at, shopify_cancel_effective_on, store_url, mrr_override, total_revenue_override, cancellation_date, signup_date, notes, name, email, stripe_customer_id, calculated_total_revenue, calculated_mrr, usage_charge_applied'
 
 export function normalizeShopDomain(value: string | null | undefined): string | null {
   if (!value) return null
@@ -277,6 +278,70 @@ export async function loadConfirmedShopifyPaymentShopIds(): Promise<Set<string>>
     from += PAGE
   }
   return paid
+}
+
+type LatestUsageHit = { at: number; amount: number }
+
+function rememberLatestUsage(
+  map: Map<string, LatestUsageHit>,
+  key: string | null | undefined,
+  hit: LatestUsageHit
+) {
+  if (!key) return
+  const existing = map.get(key)
+  if (!existing || hit.at >= existing.at) map.set(key, hit)
+}
+
+export async function loadLatestShopifyUsageAmounts(): Promise<Map<string, LatestUsageHit>> {
+  const latest = new Map<string, LatestUsageHit>()
+  const PAGE = 1000
+  let from = 0
+  for (;;) {
+    const { data, error } = await supabaseAdmin
+      .from('crm_revenue_transactions')
+      .select('shopify_shop_id, shopify_shop_domain, crm_customer_id, amount, transaction_date')
+      .eq('provider', 'shopify')
+      .eq('status', 'succeeded')
+      .eq('transaction_type', 'app_usage_sale')
+      .gt('amount', 0)
+      .range(from, from + PAGE - 1)
+
+    if (error) {
+      console.error('[Shopify Sync] loadLatestShopifyUsageAmounts:', error.message)
+      break
+    }
+    for (const row of data ?? []) {
+      const amount = Number(row.amount)
+      const at = row.transaction_date ? new Date(row.transaction_date).getTime() : 0
+      if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(at)) continue
+      const hit = { at, amount }
+      rememberLatestUsage(latest, shopGidNumeric(row.shopify_shop_id), hit)
+      const domain = normalizeShopDomain(row.shopify_shop_domain)
+      if (domain) rememberLatestUsage(latest, `domain:${domain}`, hit)
+      if (row.crm_customer_id) rememberLatestUsage(latest, `customer:${row.crm_customer_id}`, hit)
+    }
+    if (!data || data.length < PAGE) break
+    from += PAGE
+  }
+  return latest
+}
+
+export function usageAmountForShop(
+  latestUsage: Map<string, LatestUsageHit>,
+  shop: { shopId?: string | null; domain?: string | null; customerId?: string | null }
+): number | null {
+  let best: LatestUsageHit | null = null
+  const keys: string[] = []
+  const numeric = shopGidNumeric(shop.shopId)
+  if (numeric) keys.push(numeric)
+  const domain = normalizeShopDomain(shop.domain)
+  if (domain) keys.push(`domain:${domain}`)
+  if (shop.customerId) keys.push(`customer:${shop.customerId}`)
+  for (const key of keys) {
+    const hit = latestUsage.get(key)
+    if (hit && (!best || hit.at >= best.at)) best = hit
+  }
+  return best?.amount ?? null
 }
 
 export function shopHasConfirmedPayment(
@@ -576,6 +641,8 @@ export function shopifyCustomerUpdateFromLifecycle(input: {
   shop: ShopifyShopRef
   derived: DerivedShopifyLifecycle
   hasConfirmedPayment: boolean
+  usageAmount?: number | null
+  usageChargeApplied?: boolean
 }): { record: Record<string, unknown>; nextStatus: string | null; stripePreserved: boolean } {
   const cleanDomain = normalizeShopDomain(input.shop.domain) ?? normalizeShopDomain(input.customer.shopify_shop_domain)
   const metadata: Record<string, unknown> = {
@@ -636,6 +703,7 @@ export function shopifyCustomerUpdateFromLifecycle(input: {
     lifecycle: input.derived.lifecycle,
     billingPeriod: input.derived.billingInterval,
     flatRateAmount: input.derived.flatRateAmount,
+    usageAmount: input.usageAmount,
   })
   let calculatedMrr = computedMrr
   if (
@@ -666,6 +734,9 @@ export function shopifyCustomerUpdateFromLifecycle(input: {
   }
   if (input.customer.mrr_override == null) {
     record.calculated_mrr = calculatedMrr
+  }
+  if (input.usageChargeApplied) {
+    record.usage_charge_applied = true
   }
 
   return {

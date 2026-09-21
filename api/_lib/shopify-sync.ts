@@ -12,6 +12,7 @@ import { supabaseAdmin } from './supabase-admin.js'
 import {
   isShopifyConfigured,
   getAppTransactions,
+  getUsageChargeAppliedEvents,
   getHistoricalEvents,
   getActiveSubscription,
   partnerRateLimitPause,
@@ -28,12 +29,16 @@ import {
   loadShopsToProcess,
   loadEventsForShop,
   loadConfirmedShopifyPaymentShopIds,
+  loadLatestShopifyUsageAmounts,
+  usageAmountForShop,
   shopHasConfirmedPayment,
   deriveShopifyLifecycle,
   shopifyCustomerUpdateFromLifecycle,
   normalizeShopDomain,
+  isStripeAuthoritative,
   type ShopifyShopRef,
 } from './shopify-lifecycle.js'
+import { markUsageChargeApplied } from './usage-charge-applied.js'
 import {
   advanceLastPayments,
   existingProviderTxnIds,
@@ -50,7 +55,7 @@ const OVERLAP_MS = 5 * 60 * 1000
 
 export type ShopifySyncMode = 'initial' | 'delta'
 
-type SyncPhase = 'events' | 'transactions' | 'lifecycle' | 'finalize'
+type SyncPhase = 'events' | 'transactions' | 'usage_charges' | 'lifecycle' | 'finalize'
 
 export interface ShopifySyncStats {
   shopsProcessed: number
@@ -65,6 +70,8 @@ export interface ShopifySyncStats {
   apiErrors: number
   txnProcessed: number
   txnUpserted: number
+  usageChargeEventsProcessed: number
+  usageChargeMarked: number
 }
 
 interface ShopifySyncCursor {
@@ -82,6 +89,9 @@ interface ShopifySyncCursor {
   stats: ShopifySyncStats
   eventWindowCount: number
   txnPages: number
+  usageChargeAfter: string | null
+  usageChargePages: number
+  usageChargeShopKeys: string[]
   lifecycleTotal: number | null
 }
 
@@ -131,6 +141,13 @@ function computeProgress(cursor: ShopifySyncCursor, complete: boolean): ShopifyS
     txnFrac = 1
   }
 
+  let usageFrac = 0
+  if (cursor.phase === 'usage_charges') {
+    usageFrac = Math.min(0.92, 1 - Math.pow(0.88, Math.max(cursor.usageChargePages, 0)))
+  } else if (cursor.phase === 'lifecycle' || cursor.phase === 'finalize') {
+    usageFrac = 1
+  }
+
   let lifeFrac = 0
   if (cursor.phase === 'lifecycle') {
     const total = Math.max(cursor.lifecycleTotal ?? 0, 1)
@@ -142,7 +159,7 @@ function computeProgress(cursor: ShopifySyncCursor, complete: boolean): ShopifyS
   const finFrac = cursor.phase === 'finalize' ? 0.5 : 0
   const percent = Math.max(
     1,
-    Math.min(99, Math.round(eventFrac * 18 + txnFrac * 22 + lifeFrac * 58 + finFrac * 2))
+    Math.min(99, Math.round(eventFrac * 16 + txnFrac * 18 + usageFrac * 12 + lifeFrac * 52 + finFrac * 2))
   )
 
   let label = 'Syncing'
@@ -150,6 +167,8 @@ function computeProgress(cursor: ShopifySyncCursor, complete: boolean): ShopifyS
     label = `Importing history (window ${Math.min(cursor.windowIndex + 1, windows)} of ${windows})`
   } else if (cursor.phase === 'transactions') {
     label = `Importing transactions (${cursor.stats.txnProcessed} so far)`
+  } else if (cursor.phase === 'usage_charges') {
+    label = `Importing usage charges (${cursor.stats.usageChargeEventsProcessed} so far)`
   } else if (cursor.phase === 'lifecycle') {
     label =
       cursor.lifecycleTotal != null
@@ -176,6 +195,8 @@ function emptyStats(): ShopifySyncStats {
     apiErrors: 0,
     txnProcessed: 0,
     txnUpserted: 0,
+    usageChargeEventsProcessed: 0,
+    usageChargeMarked: 0,
   }
 }
 
@@ -316,6 +337,10 @@ async function executeShopifySync(mode: ShopifySyncMode): Promise<ShopifySyncRes
         else break
       } else if (cursor.phase === 'transactions') {
         const done = await runTransactionsPhase(cursor, index, errorDetails, started)
+        if (done) cursor.phase = 'usage_charges'
+        else break
+      } else if (cursor.phase === 'usage_charges') {
+        const done = await runUsageChargesPhase(cursor, index, errorDetails, started)
         if (done) {
           cursor.phase = 'lifecycle'
           cursor.shopOffset = 0
@@ -474,9 +499,12 @@ function parseResumeCursor(raw: string | null | undefined, mode: ShopifySyncMode
     const parsed = JSON.parse(raw) as ShopifySyncCursor
     if (parsed?.v === 2 && parsed.mode === mode && parsed.phase && parsed.syncFrom && parsed.syncTo) {
       parsed.affectedShops = parsed.affectedShops ?? []
-      parsed.stats = parsed.stats ?? emptyStats()
+      parsed.stats = { ...emptyStats(), ...(parsed.stats ?? {}) }
       parsed.eventWindowCount = parsed.eventWindowCount || eventWindows(parsed.syncFrom, parsed.syncTo).length
       parsed.txnPages = parsed.txnPages ?? 0
+      parsed.usageChargeAfter = parsed.usageChargeAfter ?? null
+      parsed.usageChargePages = parsed.usageChargePages ?? 0
+      parsed.usageChargeShopKeys = parsed.usageChargeShopKeys ?? []
       parsed.lifecycleTotal = parsed.lifecycleTotal ?? null
       return parsed
     }
@@ -512,13 +540,16 @@ function createCursor(
     stats: emptyStats(),
     eventWindowCount: eventWindows(syncFrom, syncTo).length,
     txnPages: 0,
+    usageChargeAfter: null,
+    usageChargePages: 0,
+    usageChargeShopKeys: [],
     lifecycleTotal: null,
   }
 }
 
 function logStats(stats: ShopifySyncStats) {
   console.log(
-    `[Shopify Sync] shops=${stats.shopsProcessed} activeSubs=${stats.activeSubscriptionsFound} events=${stats.historicalEventsProcessed} created=${stats.customersCreated} updated=${stats.customersUpdated} inTrial=${stats.movedToInTrial} active=${stats.movedToActive} canceled=${stats.movedToCanceled} skippedMissing=${stats.skippedMissingIds} apiErrors=${stats.apiErrors}`
+    `[Shopify Sync] shops=${stats.shopsProcessed} activeSubs=${stats.activeSubscriptionsFound} events=${stats.historicalEventsProcessed} usageCharges=${stats.usageChargeEventsProcessed} usageMarked=${stats.usageChargeMarked} created=${stats.customersCreated} updated=${stats.customersUpdated} inTrial=${stats.movedToInTrial} active=${stats.movedToActive} canceled=${stats.movedToCanceled} skippedMissing=${stats.skippedMissingIds} apiErrors=${stats.apiErrors}`
   )
 }
 
@@ -700,6 +731,79 @@ async function runTransactionsPhase(
   return false
 }
 
+function rememberUsageChargeShop(cursor: ShopifySyncCursor, shop: ShopifyShopRef) {
+  const key = shopKey(shop)
+  if (!key) return
+  if (!cursor.usageChargeShopKeys.includes(key)) cursor.usageChargeShopKeys.push(key)
+}
+
+function shopHasUsageChargeEvidence(cursor: ShopifySyncCursor, shop: ShopifyShopRef): boolean {
+  const key = shopKey(shop)
+  if (!key) return false
+  if (cursor.usageChargeShopKeys.includes(key)) return true
+  const domain = normalizeShopDomain(shop.domain)
+  return !!domain && cursor.usageChargeShopKeys.includes(`domain:${domain}`)
+}
+
+async function runUsageChargesPhase(
+  cursor: ShopifySyncCursor,
+  index: ShopifyCustomerIndex,
+  errorDetails: Array<{ message: string; record?: string }>,
+  started: number
+): Promise<boolean> {
+  const occurredAtMin = cursor.syncFrom
+  const occurredAtMax = cursor.syncTo
+
+  while (Date.now() - started < SHOPIFY_SYNC_TIME_BUDGET_MS) {
+    if (cursor.usageChargeAfter) await partnerRateLimitPause()
+
+    let page
+    try {
+      page = await getUsageChargeAppliedEvents(cursor.usageChargeAfter, occurredAtMin, occurredAtMax)
+    } catch (e) {
+      cursor.stats.apiErrors++
+      const message = e instanceof Error ? e.message : String(e)
+      errorDetails.push({ message: `usageChargeApplied: ${message}` })
+      console.error('[Shopify Sync] usageChargeApplied API error:', message)
+      throw e
+    }
+
+    const toMark: string[] = []
+    for (const event of page.events) {
+      cursor.stats.usageChargeEventsProcessed++
+      const shopId = shopGidNumeric(event.shop?.id)
+      const domain = normalizeShopDomain(event.shop?.myshopifyDomain)
+      if (!shopId && !domain) {
+        cursor.stats.skippedMissingIds++
+        continue
+      }
+      const shop = { shopId: shopId ?? '', domain, name: event.shop?.name ?? null }
+      addAffectedShop(cursor, shop)
+      rememberUsageChargeShop(cursor, shop)
+      const customer = index.find(shop.shopId, null, shop.domain)
+      if (!customer || isStripeAuthoritative(customer.billing_channel)) continue
+      if (customer.usage_charge_applied) continue
+      toMark.push(customer.id)
+      customer.usage_charge_applied = true
+      index.add(customer)
+    }
+
+    const marked = await markUsageChargeApplied(toMark)
+    cursor.stats.usageChargeMarked += marked
+
+    cursor.usageChargeAfter = page.cursor
+    cursor.usageChargePages = (cursor.usageChargePages ?? 0) + 1
+    await persistCursor(cursor)
+
+    if (!page.hasNextPage || !page.cursor) {
+      cursor.usageChargeAfter = null
+      return true
+    }
+  }
+
+  return false
+}
+
 async function runLifecyclePhase(
   cursor: ShopifySyncCursor,
   index: ShopifyCustomerIndex,
@@ -710,6 +814,7 @@ async function runLifecyclePhase(
     cursor.mode === 'delta' ? cursor.affectedShops : await loadShopsToProcess(index)
   cursor.lifecycleTotal = shops.length
   const paid = await loadConfirmedShopifyPaymentShopIds()
+  const latestUsage = await loadLatestShopifyUsageAmounts()
 
   while (cursor.shopOffset < shops.length && Date.now() - started < SHOPIFY_SYNC_TIME_BUDGET_MS) {
     const shop = shops[cursor.shopOffset]
@@ -768,6 +873,12 @@ async function runLifecyclePhase(
           shop,
           derived,
           hasConfirmedPayment: hasPayment,
+          usageAmount: usageAmountForShop(latestUsage, {
+            shopId: shop.shopId,
+            domain: shop.domain,
+            customerId: result.customer.id,
+          }),
+          usageChargeApplied: shopHasUsageChargeEvidence(cursor, shop),
         })
         const { error } = await supabaseAdmin
           .from('crm_customers')

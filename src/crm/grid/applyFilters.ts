@@ -57,6 +57,12 @@ function applyDate(query: any, column: string, filter: Extract<ColumnFilter, { k
     case 'between':
       if (!value || !valueTo) return query
       return query.gte(column, value).lt(column, nextDay(valueTo))
+    case 'older_than_days': {
+      const days = Number(value)
+      if (!Number.isFinite(days) || days < 0) return query
+      const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
+      return query.lte(column, cutoff)
+    }
     default:
       return query
   }
@@ -106,6 +112,13 @@ export function applyCustomerFilters(query: any, filters: CustomerFilters, searc
     const filter = filters[key]
     if (!isColumnFilterActive(filter) || !filter) continue
     if (filter.kind === 'enum') {
+      if (key === 'usage_charge_applied') {
+        const bools = filter.values
+          .map((v) => (v === 'true' ? true : v === 'false' ? false : null))
+          .filter((v): v is boolean => v !== null)
+        if (bools.length) query = query.in(key, bools)
+        continue
+      }
       query = query.in(key, filter.values)
       continue
     }

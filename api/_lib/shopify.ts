@@ -275,6 +275,120 @@ export async function getAllAppTransactions(
   return all
 }
 
+export interface ShopifyUsageChargeAppliedEvent {
+  occurredAt: string
+  chargeId: string
+  shop: {
+    id: string
+    myshopifyDomain: string
+    name: string
+  } | null
+}
+
+/**
+ * Partner App.events filtered to USAGE_CHARGE_APPLIED.
+ * This is the usage-charge application event (AppUsageRecord created),
+ * not AppUsageSale / payment collection.
+ * PageInfo has no endCursor — use edges { cursor }.
+ */
+export async function getUsageChargeAppliedEvents(
+  after?: string | null,
+  occurredAtMin?: string,
+  occurredAtMax?: string
+): Promise<{
+  events: ShopifyUsageChargeAppliedEvent[]
+  hasNextPage: boolean
+  cursor: string | null
+}> {
+  const extraVars: string[] = []
+  const extraArgs: string[] = []
+  if (occurredAtMin) {
+    extraVars.push('$occurredAtMin: DateTime')
+    extraArgs.push('occurredAtMin: $occurredAtMin')
+  }
+  if (occurredAtMax) {
+    extraVars.push('$occurredAtMax: DateTime')
+    extraArgs.push('occurredAtMax: $occurredAtMax')
+  }
+  const extraVar = extraVars.length ? `, ${extraVars.join(', ')}` : ''
+  const extraArg = extraArgs.join('\n          ')
+
+  const query = `
+    query UsageChargeAppliedEvents($appId: ID!, $after: String${extraVar}) {
+      app(id: $appId) {
+        events(
+          first: ${PAGE_SIZE}
+          after: $after
+          types: [USAGE_CHARGE_APPLIED]
+          ${extraArg}
+        ) {
+          edges {
+            cursor
+            node {
+              __typename
+              occurredAt
+              type
+              shop { id myshopifyDomain name }
+              ... on UsageChargeApplied {
+                charge { id }
+              }
+            }
+          }
+          pageInfo {
+            hasNextPage
+          }
+        }
+      }
+    }
+  `
+
+  const data = await partnerQuery<{
+    app: {
+      events: {
+        edges: Array<{
+          cursor: string
+          node: {
+            __typename: string
+            occurredAt: string
+            type?: string
+            shop?: { id: string; myshopifyDomain: string; name: string } | null
+            charge?: { id?: string | null } | null
+          }
+        }>
+        pageInfo: { hasNextPage: boolean }
+      }
+    } | null
+  }>(query, {
+    appId: partnerAppGid(),
+    after: after || null,
+    ...(occurredAtMin ? { occurredAtMin } : {}),
+    ...(occurredAtMax ? { occurredAtMax } : {}),
+  })
+
+  const conn = data.app?.events
+  if (!conn) {
+    throw new Error('Shopify Partner API returned no app usage-charge events connection')
+  }
+
+  const lastEdge = conn.edges[conn.edges.length - 1]
+  const events: ShopifyUsageChargeAppliedEvent[] = []
+  for (const edge of conn.edges) {
+    const chargeId = edge.node.charge?.id?.trim()
+    if (!chargeId) continue
+    events.push({
+      occurredAt: edge.node.occurredAt,
+      chargeId,
+      shop: edge.node.shop ?? null,
+    })
+  }
+
+  return {
+    events,
+    hasNextPage: conn.pageInfo.hasNextPage,
+    cursor: lastEdge?.cursor ?? null,
+  }
+}
+
 export interface ShopifySubscriptionItem {
   handle: string | null
   description: string | null

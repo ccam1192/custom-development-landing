@@ -153,7 +153,9 @@ export default function CustomerDetail({ customer, onClose, onEdit, onRefresh }:
             }
           />
           <Field label="Signup Date" value={formatDate(customer.signup_date)} />
+          <Field label="Free Trial Started" value={formatDate(customer.shopify_subscription_created_at)} />
           <Field label="Last Payment" value={formatDate(customer.last_payment)} />
+          <Field label="Usage Charge Applied" value={customer.usage_charge_applied ? 'Yes' : 'No'} />
           <Field label="User Type" value={USER_TYPE_LABELS[customer.user_type] ?? customer.user_type} />
           <Field label="Billing Channel" value={BILLING_CHANNEL_LABELS[customer.billing_channel]} />
           <Field label="Source" value={customer.source ? SOURCE_LABELS[customer.source] : '—'} />

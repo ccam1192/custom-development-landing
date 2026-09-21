@@ -211,6 +211,14 @@ export default function CustomerTable({
             {CLIENT_STATUS_LABELS[c.client_status]}
           </span>
         )
+      case 'usage_charge_applied':
+        return (
+          <span className="text-gray-600 whitespace-nowrap">{c.usage_charge_applied ? 'Yes' : 'No'}</span>
+        )
+      case 'shopify_subscription_created_at':
+        return (
+          <span className="text-gray-500 whitespace-nowrap">{formatDate(c.shopify_subscription_created_at)}</span>
+        )
       case 'cancellation_date':
         return <span className="text-gray-500 whitespace-nowrap">{formatDate(c.cancellation_date)}</span>
       case 'last_payment':

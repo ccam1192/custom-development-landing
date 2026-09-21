@@ -22,6 +22,7 @@ type Row = {
   mrr_override: number | null
   total_revenue_override: number | null
   calculated_mrr: number | null
+  usage_charge_applied?: boolean | null
 }
 
 function rank(row: Row): number {
@@ -53,7 +54,7 @@ export async function copyCanonicalMyshopifyFields(
     const { data, error } = await supabase
       .from('crm_customers')
       .select(
-        'id, email, name, notes, billing_channel, store_url, shopify_shop_id, shopify_shop_domain, stripe_customer_id, signup_date, cancellation_date, mrr_override, total_revenue_override, calculated_mrr'
+        'id, email, name, notes, billing_channel, store_url, shopify_shop_id, shopify_shop_domain, stripe_customer_id, signup_date, cancellation_date, mrr_override, total_revenue_override, calculated_mrr, usage_charge_applied'
       )
       .range(from, from + PAGE - 1)
     if (error) throw error
@@ -100,6 +101,9 @@ export async function copyCanonicalMyshopifyFields(
         patch.calculated_mrr = other.calculated_mrr
       }
       if (!canonical.cancellation_date && other.cancellation_date) patch.cancellation_date = other.cancellation_date
+      if (!canonical.usage_charge_applied && other.usage_charge_applied) {
+        patch.usage_charge_applied = true
+      }
       // Never copy shopify_shop_id / stripe_customer_id: unique indexes still
       // belong to the source row until an explicit merge/delete.
     }

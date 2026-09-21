@@ -249,7 +249,7 @@ export default function SyncControls({
       )}
 
       {shopifyTrialEmailResult && (
-        <div className="text-[11px] leading-4 text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-2 py-1.5 max-w-[360px]">
+        <div className="text-[11px] leading-4 text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-2 py-1.5 max-w-[420px]">
           <p className="font-medium text-gray-700">Shopify trial emails</p>
           <p>
             {shopifyTrialEmailResult.eligible} eligible · {shopifyTrialEmailResult.emailsFound} found ·{' '}
@@ -260,6 +260,19 @@ export default function SyncControls({
               : ''}
             {shopifyTrialEmailResult.errorCount > 0 ? ` · ${shopifyTrialEmailResult.errorCount} errors` : ''}
           </p>
+          {shopifyTrialEmailResult.errors.length > 0 && (
+            <ul className="mt-1 max-h-28 overflow-auto space-y-0.5 text-red-700">
+              {shopifyTrialEmailResult.errors.slice(0, 8).map((err, i) => (
+                <li key={`${err.record ?? 'err'}-${i}`}>
+                  {err.record ? `${err.record}: ` : ''}
+                  {err.message}
+                </li>
+              ))}
+              {shopifyTrialEmailResult.errors.length > 8 && (
+                <li>…and {shopifyTrialEmailResult.errors.length - 8} more</li>
+              )}
+            </ul>
+          )}
         </div>
       )}
 
