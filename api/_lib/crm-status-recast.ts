@@ -6,6 +6,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
+  calculateMrr,
   resolveClientStatus,
   shopifyFlatRateMrr,
   type ClientStatus,
@@ -13,7 +14,7 @@ import {
 } from './status-engine.js'
 
 const CUSTOMER_COLUMNS =
-  'id, name, email, billing_channel, client_status, user_type, store_url, shopify_shop_id, shopify_shop_domain, shopify_subscription_status, shopify_cancelled_at, shopify_billing_interval, shopify_subscription_amount, stripe_customer_id, stripe_subscription_status, stripe_trial_end, stripe_canceled_at, boardroom_subscription_status, cancellation_date, calculated_total_revenue, calculated_mrr, mrr_override, total_revenue_override'
+  'id, name, email, billing_channel, client_status, user_type, store_url, shopify_shop_id, shopify_shop_domain, shopify_subscription_status, shopify_cancelled_at, shopify_billing_interval, shopify_subscription_amount, stripe_customer_id, stripe_subscription_status, stripe_plan_amount, stripe_trial_end, stripe_canceled_at, boardroom_subscription_status, cancellation_date, calculated_total_revenue, calculated_mrr, mrr_override, total_revenue_override'
 
 type CustomerRow = {
   id: string
@@ -31,6 +32,7 @@ type CustomerRow = {
   shopify_subscription_amount: number | null
   stripe_customer_id: string | null
   stripe_subscription_status: string | null
+  stripe_plan_amount: number | null
   stripe_trial_end: string | null
   stripe_canceled_at: string | null
   boardroom_subscription_status: string | null
@@ -334,6 +336,16 @@ export async function recastCrmClientStatuses(supabase: SupabaseClient): Promise
         c.cancellation_date
       ) {
         patch.cancellation_date = null
+      }
+      if (c.mrr_override == null) {
+        const nextMrr = calculateMrr({
+          clientStatus: nextStatus,
+          userType: c.user_type,
+          stripePlanAmount: c.stripe_plan_amount,
+        })
+        if (Number(c.calculated_mrr ?? 0) !== nextMrr) {
+          patch.calculated_mrr = nextMrr
+        }
       }
     }
 

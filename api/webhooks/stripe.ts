@@ -39,6 +39,8 @@ type CrmRow = {
   notes: string | null
   total_revenue_override: number | null
   calculated_total_revenue: number | null
+  stripe_plan_amount: number | null
+  stripe_subscription_status: string | null
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -104,7 +106,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 }
 
 const CRM_WEBHOOK_COLUMNS =
-  'id, user_type, boardroom_subscription_status, cancellation_date, email, name, billing_channel, store_url, signup_date, notes, total_revenue_override, calculated_total_revenue'
+  'id, user_type, boardroom_subscription_status, cancellation_date, email, name, billing_channel, store_url, signup_date, notes, total_revenue_override, calculated_total_revenue, stripe_plan_amount, stripe_subscription_status'
 
 async function findCrmByStripeId(stripeCustomerId: string): Promise<CrmRow | null> {
   const { data } = await supabaseAdmin
@@ -307,6 +309,14 @@ function stripeInvoicePaidAt(invoice: Stripe.Invoice): string {
   return new Date(paidAt * 1000).toISOString()
 }
 
+function stripeInvoicePlanAmount(invoice: Stripe.Invoice): number | null {
+  for (const line of invoice.lines?.data ?? []) {
+    const unit = line.price?.unit_amount
+    if (typeof unit === 'number' && unit > 0) return unit
+  }
+  return invoice.amount_paid > 0 ? invoice.amount_paid : null
+}
+
 async function handleInvoicePaid(invoice: Stripe.Invoice) {
   if (!invoice.id || !invoice.amount_paid || invoice.amount_paid <= 0) return
 
@@ -357,6 +367,12 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
       hasSuccessfulPayment: calculatedTotalRevenue > 0,
       hasShopifyRevenue: false,
     })
+    const planAmount = customer?.stripe_plan_amount ?? stripeInvoicePlanAmount(invoice)
+    const calculatedMrr = calculateMrr({
+      clientStatus,
+      userType: customer?.user_type,
+      stripePlanAmount: planAmount,
+    })
 
     await supabaseAdmin
       .from('crm_customers')
@@ -368,6 +384,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
           : {
               client_status: clientStatus,
               billing_channel: 'stripe',
+              calculated_mrr: calculatedMrr,
             }),
       })
       .eq('id', crmCustomerId)
