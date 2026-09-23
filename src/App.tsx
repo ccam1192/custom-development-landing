@@ -4,6 +4,8 @@ import HomePage from './pages/HomePage'
 import BookACallPage from './pages/BookACallPage'
 import RequirementsGatheringPage from './pages/RequirementsGatheringPage'
 import TechnologyPartnersPage from './pages/TechnologyPartnersPage'
+import AccountingFirmsPage from './pages/AccountingFirmsPage'
+import { PATHS } from './config'
 
 const CrmApp = lazy(() => import('./crm/CrmApp'))
 
@@ -37,6 +39,7 @@ function AppRoutes() {
         <Route path="/book-a-call" element={<BookACallPage />} />
         <Route path="/requirements-gathering" element={<RequirementsGatheringPage />} />
         <Route path="/technology-partners" element={<TechnologyPartnersPage />} />
+        <Route path={PATHS.accountingFirms} element={<AccountingFirmsPage />} />
         <Route
           path="/crm/*"
           element={

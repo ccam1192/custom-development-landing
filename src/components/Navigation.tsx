@@ -19,6 +19,7 @@ export default function Navigation() {
   const { pathname } = useLocation()
   const homeTo = isCustomDevelopmentPath(pathname) ? pathname : PATHS.customDevelopment
   const isPartnerPage = pathname === PATHS.technologyPartners
+  const isAccountingPage = pathname === PATHS.accountingFirms
 
   return (
     <motion.nav
@@ -42,10 +43,10 @@ export default function Navigation() {
           </Link>
 
           <div className="hidden md:flex items-center gap-8">
-            {isPartnerPage ? (
+            {isPartnerPage || isAccountingPage ? (
               <>
                 <a
-                  href="#partnership-flow"
+                  href={isAccountingPage ? '#partnership' : '#partnership-flow'}
                   className="text-sm font-medium text-gray-600 hover:text-primary transition-colors"
                 >
                   How It Works
@@ -62,7 +63,7 @@ export default function Navigation() {
                   rel="noopener noreferrer"
                   className="inline-flex items-center px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark transition-colors shadow-sm"
                 >
-                  Talk About a Partnership
+                  {isAccountingPage ? 'Book a Conversation' : 'Talk About a Partnership'}
                 </a>
               </>
             ) : (
@@ -111,10 +112,10 @@ export default function Navigation() {
             className="md:hidden border-t border-gray-200/50 bg-white/95 backdrop-blur-lg"
           >
             <div className="px-4 py-4 space-y-3">
-              {isPartnerPage ? (
+              {isPartnerPage || isAccountingPage ? (
                 <>
                   <a
-                    href="#partnership-flow"
+                    href={isAccountingPage ? '#partnership' : '#partnership-flow'}
                     onClick={() => setMobileOpen(false)}
                     className="block text-sm font-medium text-gray-600 hover:text-primary py-2"
                   >
@@ -134,7 +135,7 @@ export default function Navigation() {
                     onClick={() => setMobileOpen(false)}
                     className="block w-full text-center px-4 py-2.5 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark transition-colors"
                   >
-                    Talk About a Partnership
+                    {isAccountingPage ? 'Book a Conversation' : 'Talk About a Partnership'}
                   </a>
                 </>
               ) : (

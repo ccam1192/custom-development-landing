@@ -52,6 +52,11 @@ export default function Footer() {
                   Technology Partners
                 </Link>
               </li>
+              <li>
+                <Link to={PATHS.accountingFirms} className="hover:text-white transition-colors">
+                  For Accounting Firms
+                </Link>
+              </li>
             </ul>
           </div>
           <div>
