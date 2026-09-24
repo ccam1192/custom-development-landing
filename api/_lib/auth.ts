@@ -31,10 +31,17 @@ export async function requireAuth(req: VercelRequest, res: VercelResponse) {
     auth: { autoRefreshToken: false, persistSession: false },
   })
 
-  const {
+  let {
     data: { user },
     error,
   } = await supabase.auth.getUser(token)
+
+  if (error && /issued at future|iat.*future/i.test(error.message)) {
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    const retry = await supabase.auth.getUser(token)
+    user = retry.data.user
+    error = retry.error
+  }
 
   if (error || !user) {
     res.status(401).json({ error: 'Invalid or expired token' })
