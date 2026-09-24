@@ -41,7 +41,7 @@ function hasRenderedForm(root: HTMLElement) {
   )
 }
 
-export default function HubSpotForm() {
+export default function HubSpotForm({ formId = HS_FORM_ID }: { formId?: string }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [showPlaceholder, setShowPlaceholder] = useState(false)
 
@@ -98,7 +98,7 @@ export default function HubSpotForm() {
       <div
         className="hs-form-frame"
         data-region={HS_REGION}
-        data-form-id={HS_FORM_ID}
+        data-form-id={formId}
         data-portal-id={HS_PORTAL_ID}
       />
 
