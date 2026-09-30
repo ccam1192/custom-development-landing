@@ -1,15 +1,17 @@
 import { useState } from 'react'
 import { X, RotateCcw } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
-import type { CrmCustomer, ClientStatus, Source } from '../types'
+import type { CrmCustomer, ClientStatus, Source, UserType } from '../types'
 import {
   CLIENT_STATUS_LABELS,
   SOURCE_LABELS,
+  USER_TYPE_LABELS,
   getDisplayMrr,
   getDisplayRevenue,
   hasMrrOverride,
   hasRevenueOverride,
 } from '../types'
+import { recastStatusForUserType } from '../recastStatusForUserType'
 
 interface EditCustomerModalProps {
   customer: CrmCustomer
@@ -19,6 +21,7 @@ interface EditCustomerModalProps {
 
 export default function EditCustomerModal({ customer, onClose, onSaved }: EditCustomerModalProps) {
   const [clientStatus, setClientStatus] = useState<ClientStatus>(customer.client_status)
+  const [userType, setUserType] = useState<UserType>(customer.user_type)
   const [cancellationDate, setCancellationDate] = useState(
     customer.cancellation_date ? customer.cancellation_date.split('T')[0] : ''
   )
@@ -36,7 +39,8 @@ export default function EditCustomerModal({ customer, onClose, onSaved }: EditCu
     setError(null)
 
     const updates: Record<string, unknown> = {
-      client_status: clientStatus,
+      client_status: userType === 'agency_client' ? 'agency_client' : clientStatus,
+      user_type: userType,
       cancellation_date: cancellationDate || null,
       notes: notes || null,
       source: source || null,
@@ -101,6 +105,24 @@ export default function EditCustomerModal({ customer, onClose, onSaved }: EditCu
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
             >
               {Object.entries(CLIENT_STATUS_LABELS).map(([k, v]) => (
+                <option key={k} value={k}>{v}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* User Type */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">User Type</label>
+            <select
+              value={userType}
+              onChange={(e) => {
+                const next = e.target.value as UserType
+                setUserType(next)
+                setClientStatus(recastStatusForUserType(customer, next))
+              }}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+            >
+              {Object.entries(USER_TYPE_LABELS).map(([k, v]) => (
                 <option key={k} value={k}>{v}</option>
               ))}
             </select>
