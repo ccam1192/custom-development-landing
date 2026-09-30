@@ -65,7 +65,19 @@ export default function CrmDashboardPage() {
     refreshKpis()
   }, [refresh, refreshKpis])
 
-  const { states, syncing, error: syncError, triggerSync, triggerShopifySync, triggerShopifyTrialEmailBackfill, lastShopifyLog, shopifyProgress, shopifyTrialEmailResult } = useSyncStatus(handleRefresh)
+  const {
+    states,
+    syncing,
+    error: syncError,
+    triggerSync,
+    triggerShopifySync,
+    triggerShopifyTrialEmailBackfill,
+    triggerBoardroomEmailSync,
+    lastShopifyLog,
+    shopifyProgress,
+    shopifyTrialEmailResult,
+    boardroomEmailResult,
+  } = useSyncStatus(handleRefresh)
 
   const [viewCustomer, setViewCustomer] = useState<CrmCustomer | null>(null)
   const [editCustomer, setEditCustomer] = useState<CrmCustomer | null>(null)
@@ -90,6 +102,10 @@ export default function CrmDashboardPage() {
                 void triggerShopifyTrialEmailBackfill()
               }}
               shopifyTrialEmailResult={shopifyTrialEmailResult}
+              onSyncBoardroomEmails={() => {
+                void triggerBoardroomEmailSync()
+              }}
+              boardroomEmailResult={boardroomEmailResult}
             />
           </div>
           <div className="flex items-center gap-2">

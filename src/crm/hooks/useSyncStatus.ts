@@ -2,7 +2,25 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../../lib/supabase'
 import type { CrmSyncLog, CrmSyncState, SyncProvider } from '../types'
 
-export type SyncingTarget = SyncProvider | 'all' | 'shopify_initial' | 'shopify_delta' | 'shopify_trial_emails' | null
+export type SyncingTarget =
+  | SyncProvider
+  | 'all'
+  | 'shopify_initial'
+  | 'shopify_delta'
+  | 'shopify_trial_emails'
+  | 'boardroom_emails'
+  | null
+
+export interface BoardroomEmailSyncSummary {
+  checked: number
+  updated: number
+  already_had_email: number
+  no_match: number
+  ambiguous: number
+  missing_boardroom_email: number
+  no_myshopify_domain: number
+  errors: number
+}
 
 export interface ShopifyTrialEmailBackfillSummary {
   eligible: number
@@ -22,6 +40,7 @@ export function useSyncStatus(onSyncComplete?: () => void) {
   const [syncing, setSyncing] = useState<SyncingTarget>(null)
   const [shopifyProgress, setShopifyProgress] = useState<{ percent: number; label: string } | null>(null)
   const [shopifyTrialEmailResult, setShopifyTrialEmailResult] = useState<ShopifyTrialEmailBackfillSummary | null>(null)
+  const [boardroomEmailResult, setBoardroomEmailResult] = useState<BoardroomEmailSyncSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const fetchStates = useCallback(async () => {
@@ -154,6 +173,47 @@ export function useSyncStatus(onSyncComplete?: () => void) {
     [syncing, fetchStates, onSyncComplete, postSync]
   )
 
+  const triggerBoardroomEmailSync = useCallback(async () => {
+    if (syncing) return null
+    setSyncing('boardroom_emails')
+    setError(null)
+    setBoardroomEmailResult(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch('/api/crm/sync/boardroom-emails', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token ?? ''}`,
+        },
+      })
+      const payload = await res.json().catch(() => null)
+      if (!res.ok) {
+        setError(`Boardroom emails: ${payload?.error ?? `HTTP ${res.status}`}`)
+        return null
+      }
+      const summary: BoardroomEmailSyncSummary = {
+        checked: Number(payload?.checked ?? 0),
+        updated: Number(payload?.updated ?? 0),
+        already_had_email: Number(payload?.already_had_email ?? 0),
+        no_match: Number(payload?.no_match ?? 0),
+        ambiguous: Number(payload?.ambiguous ?? 0),
+        missing_boardroom_email: Number(payload?.missing_boardroom_email ?? 0),
+        no_myshopify_domain: Number(payload?.no_myshopify_domain ?? 0),
+        errors: Number(payload?.errors ?? 0),
+      }
+      setBoardroomEmailResult(summary)
+      await fetchStates()
+      onSyncComplete?.()
+      return summary
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Boardroom email sync failed')
+      return null
+    } finally {
+      setSyncing(null)
+    }
+  }, [syncing, fetchStates, onSyncComplete])
+
   const triggerShopifyTrialEmailBackfill = useCallback(async () => {
     if (syncing) return null
     setSyncing('shopify_trial_emails')
@@ -204,9 +264,11 @@ export function useSyncStatus(onSyncComplete?: () => void) {
     triggerSync,
     triggerShopifySync,
     triggerShopifyTrialEmailBackfill,
+    triggerBoardroomEmailSync,
     lastShopifyLog,
     shopifyProgress,
     shopifyTrialEmailResult,
+    boardroomEmailResult,
     refresh: fetchStates,
   }
 }

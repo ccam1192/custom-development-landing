@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { RefreshCw, CheckCircle, AlertCircle, Clock, Loader2, ChevronDown } from 'lucide-react'
 import type { CrmSyncLog, CrmSyncState, SyncProvider } from '../types'
-import type { SyncingTarget, ShopifyTrialEmailBackfillSummary } from '../hooks/useSyncStatus'
+import type { SyncingTarget, ShopifyTrialEmailBackfillSummary, BoardroomEmailSyncSummary } from '../hooks/useSyncStatus'
 
 interface SyncControlsProps {
   states: CrmSyncState[]
@@ -12,6 +12,8 @@ interface SyncControlsProps {
   onShopifySync: (mode: 'initial' | 'delta') => void
   onBackfillShopifyTrialEmails: () => void
   shopifyTrialEmailResult: ShopifyTrialEmailBackfillSummary | null
+  onSyncBoardroomEmails: () => void
+  boardroomEmailResult: BoardroomEmailSyncSummary | null
 }
 
 function formatDate(d: string | null | undefined): string {
@@ -55,6 +57,8 @@ export default function SyncControls({
   onShopifySync,
   onBackfillShopifyTrialEmails,
   shopifyTrialEmailResult,
+  onSyncBoardroomEmails,
+  boardroomEmailResult,
 }: SyncControlsProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -145,6 +149,17 @@ export default function SyncControls({
                 }}
               >
                 Sync Boardroom
+              </button>
+              <button
+                role="menuitem"
+                className="w-full px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-50"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onSyncBoardroomEmails()
+                }}
+              >
+                Sync Boardroom Emails
+                <span className="block text-[11px] text-gray-400">Fill blank Shopify emails from Boardroom</span>
               </button>
               <div className="border-t border-gray-100 mt-1 pt-1">
                 <button
@@ -245,6 +260,36 @@ export default function SyncControls({
         <div className="text-[11px] text-gray-600 flex items-center gap-1">
           <Loader2 size={14} className="text-blue-500 animate-spin" />
           Backfilling Shopify trial emails…
+        </div>
+      )}
+
+      {syncing === 'boardroom_emails' && (
+        <div className="text-[11px] text-gray-600 flex items-center gap-1">
+          <Loader2 size={14} className="text-blue-500 animate-spin" />
+          Syncing Boardroom emails…
+        </div>
+      )}
+
+      {boardroomEmailResult && (
+        <div className="text-[11px] leading-4 text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-2 py-1.5 max-w-[420px]">
+          <p className="font-medium text-gray-700">Boardroom emails</p>
+          <p>
+            Boardroom email sync complete: {boardroomEmailResult.updated} emails populated
+            {boardroomEmailResult.no_match > 0
+              ? `, ${boardroomEmailResult.no_match} Shopify customers had no matching Boardroom user`
+              : ''}
+            {boardroomEmailResult.ambiguous > 0 ? `, ${boardroomEmailResult.ambiguous} ${boardroomEmailResult.ambiguous === 1 ? 'was' : 'were'} ambiguous` : ''}
+            {boardroomEmailResult.missing_boardroom_email > 0
+              ? `, ${boardroomEmailResult.missing_boardroom_email} matched a Boardroom user with no email`
+              : ''}
+            {boardroomEmailResult.no_myshopify_domain > 0
+              ? `, ${boardroomEmailResult.no_myshopify_domain} had no MyShopify domain`
+              : ''}
+            {boardroomEmailResult.already_had_email > 0
+              ? `, ${boardroomEmailResult.already_had_email} already had an email`
+              : ''}
+            {boardroomEmailResult.errors > 0 ? `, ${boardroomEmailResult.errors} errors` : ''}.
+          </p>
         </div>
       )}
 
