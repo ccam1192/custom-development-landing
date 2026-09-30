@@ -4,7 +4,7 @@ import {
   isEligibleShopifyEmailCandidate,
   lookupBoardroomEmail,
 } from '../api/_lib/boardroom-emails.ts'
-import { collectBoardroomShopifyDomains } from '../api/_lib/boardroom-crm-api.ts'
+import { collectBoardroomShopifyDomains, usersPageUrl } from '../api/_lib/boardroom-crm-api.ts'
 
 function assert(condition: unknown, message: string) {
   if (!condition) throw new Error(message)
@@ -129,6 +129,13 @@ const lookup = buildBoardroomEmailLookup(users)
   const missingEmail = lookupBoardroomEmail(lookup, 'no-email.myshopify.com')
   assertEqual(missingEmail.status, 'missing_email', 'missing boardroom email')
   console.log('PASS extra — missing Boardroom email and non-Shopify stores')
+}
+
+{
+  const url = usersPageUrl('https://app.ecommboardroom.com/api/crm/v1', 2)
+  assert(url.includes('page=2'), 'page param')
+  assert(url.includes('per_page=500'), 'per_page preserved')
+  console.log('PASS extra — pagination URL keeps per_page=500')
 }
 
 console.log('All Boardroom email matching cases passed')

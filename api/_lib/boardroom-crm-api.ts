@@ -8,7 +8,7 @@
 import { myshopifyDomainFromUnknown } from './shopify-lifecycle.js'
 
 const PER_PAGE = 500
-const MAX_PAGES = 100
+const MAX_PAGES = 250
 
 export interface BoardroomEmailSourceUser {
   id: string
@@ -50,21 +50,12 @@ function redactSecrets(text: string): string {
   return out.replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
 }
 
-function resolveNextUrl(next: string, baseUrl: string): string | null {
-  try {
-    const base = new URL(baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`)
-    const nextUrl = new URL(next, base)
-    if (
-      nextUrl.protocol === 'https:' &&
-      nextUrl.origin === base.origin &&
-      nextUrl.pathname.startsWith(base.pathname.replace(/\/$/, ''))
-    ) {
-      return nextUrl.toString()
-    }
-    return null
-  } catch {
-    return null
-  }
+/** Laravel pagination links omit per_page, which would silently drop back to 100. */
+export function usersPageUrl(baseUrl: string, page: number, perPage = PER_PAGE): string {
+  const url = new URL(baseUrl.endsWith('/') ? `${baseUrl}users` : `${baseUrl}/users`)
+  url.searchParams.set('page', String(page))
+  url.searchParams.set('per_page', String(perPage))
+  return url.toString()
 }
 
 export function collectBoardroomShopifyDomains(input: {
@@ -135,7 +126,9 @@ async function getJson(url: string, apiKey: string): Promise<BoardroomUsersEnvel
 }
 
 /**
- * Paginate GET /users via links.next. Returns only id, email, and MyShopify domains.
+ * Paginate GET /users with an explicit page + per_page=500.
+ * Do not follow links.next as-is: Boardroom omits per_page, so page 2+ would
+ * silently fall back to 100 and miss newer users under a page cap.
  */
 export async function fetchBoardroomUsersForEmailLookup(): Promise<BoardroomEmailSourceUser[]> {
   if (!isBoardroomCrmApiConfigured()) {
@@ -144,24 +137,27 @@ export async function fetchBoardroomUsersForEmailLookup(): Promise<BoardroomEmai
 
   const { baseUrl, apiKey } = getConfig()
   const users: BoardroomEmailSourceUser[] = []
-  const seen = new Set<string>()
-  let url: string | null = `${baseUrl}/users?per_page=${PER_PAGE}`
+  const seenIds = new Set<string>()
+  let page = 1
+  let lastPage = 1
 
-  for (let page = 0; url && page < MAX_PAGES; page++) {
-    if (seen.has(url)) break
-    seen.add(url)
-
-    const envelope = await getJson(url, apiKey)
+  while (page <= lastPage && page <= MAX_PAGES) {
+    const envelope = await getJson(usersPageUrl(baseUrl, page), apiKey)
     if (!Array.isArray(envelope.data)) {
       throw new Error('Boardroom API GET /users did not return a data array')
     }
     for (const row of envelope.data) {
       const user = slimUser(row)
-      if (user) users.push(user)
+      if (!user || seenIds.has(user.id)) continue
+      seenIds.add(user.id)
+      users.push(user)
     }
 
-    const next = typeof envelope.links?.next === 'string' ? envelope.links.next : null
-    url = next ? resolveNextUrl(next, baseUrl) : null
+    const metaPage = Number((envelope.meta as { page?: unknown } | undefined)?.page)
+    const metaLast = Number((envelope.meta as { last_page?: unknown } | undefined)?.last_page)
+    if (Number.isFinite(metaLast) && metaLast > 0) lastPage = metaLast
+    if (envelope.data.length === 0) break
+    page = (Number.isFinite(metaPage) && metaPage > 0 ? metaPage : page) + 1
   }
 
   return users
