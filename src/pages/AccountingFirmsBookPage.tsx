@@ -11,7 +11,7 @@ const PAGE_DESCRIPTION =
 /** Campaign form — distinct from the general /book-a-call HubSpot form. */
 const ACCOUNTING_FORM_ID = 'c34f4b59-48f5-4fa9-a966-280acecc18ac'
 
-const HEADLINE = 'Have a Client Who Needs More Than Another SaaS Subscription?'
+const HEADLINE = 'Your Clients Need Custom Software. You Don’t Need to Build It Yourself.'
 
 const DESCRIPTION =
   'You’re often the person who sees where a client’s spreadsheets, manual workflows, and disconnected systems are holding them back. Bring us into the conversation and we’ll help you explore whether custom software could solve the problem—and how we could work together to deliver it.'
