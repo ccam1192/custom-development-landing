@@ -17,9 +17,12 @@ const navItems = [
 export default function Navigation() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const { pathname } = useLocation()
-  const homeTo = isCustomDevelopmentPath(pathname) ? pathname : PATHS.customDevelopment
   const isPartnerPage = pathname === PATHS.technologyPartners
   const isAccountingPage = pathname === PATHS.accountingFirms
+  const isWorkshopsPage = pathname === PATHS.aiSoftwareWorkshops
+  const homeTo = isWorkshopsPage || isCustomDevelopmentPath(pathname) ? pathname : PATHS.customDevelopment
+  const desktopNavClass = isWorkshopsPage ? 'hidden lg:flex' : 'hidden md:flex'
+  const mobileNavClass = isWorkshopsPage ? 'lg:hidden' : 'md:hidden'
 
   return (
     <motion.nav
@@ -33,7 +36,8 @@ export default function Navigation() {
           <Link
             to={homeTo}
             onClick={() => {
-              if (isCustomDevelopmentPath(pathname)) {
+              setMobileOpen(false)
+              if (homeTo === pathname) {
                 window.scrollTo({ top: 0, behavior: 'smooth' })
               }
             }}
@@ -42,8 +46,43 @@ export default function Navigation() {
             Boardroom
           </Link>
 
-          <div className="hidden md:flex items-center gap-8">
-            {isPartnerPage || isAccountingPage ? (
+          <div className={`${desktopNavClass} items-center gap-6 xl:gap-8`}>
+            {isWorkshopsPage ? (
+              <>
+                <a
+                  href="#workshops"
+                  className="text-sm font-medium text-gray-600 hover:text-primary transition-colors"
+                >
+                  Workshops
+                </a>
+                <a
+                  href="#how-it-works"
+                  className="text-sm font-medium text-gray-600 hover:text-primary transition-colors"
+                >
+                  How It Works
+                </a>
+                <a
+                  href="#examples"
+                  className="text-sm font-medium text-gray-600 hover:text-primary transition-colors"
+                >
+                  Examples
+                </a>
+                <Link
+                  to={PATHS.home}
+                  className="text-sm font-medium text-gray-600 hover:text-primary transition-colors"
+                >
+                  Custom Development
+                </Link>
+                <a
+                  href={BOOK_A_CALL_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark transition-colors shadow-sm whitespace-nowrap"
+                >
+                  Book a Workshop
+                </a>
+              </>
+            ) : isPartnerPage || isAccountingPage ? (
               <>
                 <a
                   href={isAccountingPage ? '#partnership' : '#partnership-flow'}
@@ -95,8 +134,9 @@ export default function Navigation() {
 
           <button
             onClick={() => setMobileOpen(!mobileOpen)}
-            className="md:hidden p-2 text-gray-600 hover:text-gray-900"
+            className={`${mobileNavClass} p-2 text-gray-600 hover:text-gray-900`}
             aria-label="Toggle menu"
+            aria-expanded={mobileOpen}
           >
             {mobileOpen ? <X size={24} /> : <Menu size={24} />}
           </button>
@@ -109,10 +149,50 @@ export default function Navigation() {
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             exit={{ opacity: 0, height: 0 }}
-            className="md:hidden border-t border-gray-200/50 bg-white/95 backdrop-blur-lg"
+            className={`${mobileNavClass} border-t border-gray-200/50 bg-white/95 backdrop-blur-lg`}
           >
             <div className="px-4 py-4 space-y-3">
-              {isPartnerPage || isAccountingPage ? (
+              {isWorkshopsPage ? (
+                <>
+                  <a
+                    href="#workshops"
+                    onClick={() => setMobileOpen(false)}
+                    className="block text-sm font-medium text-gray-600 hover:text-primary py-2"
+                  >
+                    Workshops
+                  </a>
+                  <a
+                    href="#how-it-works"
+                    onClick={() => setMobileOpen(false)}
+                    className="block text-sm font-medium text-gray-600 hover:text-primary py-2"
+                  >
+                    How It Works
+                  </a>
+                  <a
+                    href="#examples"
+                    onClick={() => setMobileOpen(false)}
+                    className="block text-sm font-medium text-gray-600 hover:text-primary py-2"
+                  >
+                    Examples
+                  </a>
+                  <Link
+                    to={PATHS.home}
+                    onClick={() => setMobileOpen(false)}
+                    className="block text-sm font-medium text-gray-600 hover:text-primary py-2"
+                  >
+                    Custom Development
+                  </Link>
+                  <a
+                    href={BOOK_A_CALL_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => setMobileOpen(false)}
+                    className="block w-full text-center px-4 py-2.5 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary-dark transition-colors"
+                  >
+                    Book a Workshop
+                  </a>
+                </>
+              ) : isPartnerPage || isAccountingPage ? (
                 <>
                   <a
                     href={isAccountingPage ? '#partnership' : '#partnership-flow'}

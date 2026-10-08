@@ -42,6 +42,13 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.3);
 }
 
+/* Boardroom brand blue, scoped so other landing pages keep their current theme. */
+.workshops-page {
+  --color-primary: #1148a7;
+  --color-primary-dark: #0c3a8c;
+  --color-primary-light: #1a5ec4;
+}
+
 /* —— Book-a-call landing page —— */
 
 .book-a-call-grid {
