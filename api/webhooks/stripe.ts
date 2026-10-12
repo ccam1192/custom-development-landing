@@ -3,7 +3,12 @@ import { supabaseAdmin } from '../_lib/supabase-admin.js'
 import { constructWebhookEvent, isStripeConfigured, getStripe } from '../_lib/stripe.js'
 import { determineClientStatus, calculateMrr } from '../_lib/status-engine.js'
 import { myshopifyDomainFromMetadata } from '../_lib/shopify-lifecycle.js'
-import { advanceLastPayments, existingProviderTxnIds } from '../_lib/last-payment.js'
+import { advanceLastPayments, existingProviderTxnIds, isLaterPayment } from '../_lib/last-payment.js'
+import {
+  collectedStripeChargeAmount,
+  isCollectedInvoiceLessCharge,
+  stripeCustomerIdFromCharge,
+} from '../_lib/stripe-charges.js'
 import {
   attachOrphanStripeTransactions,
   nextCalculatedTotalRevenue,
@@ -41,6 +46,9 @@ type CrmRow = {
   calculated_total_revenue: number | null
   stripe_plan_amount: number | null
   stripe_subscription_status: string | null
+  stripe_subscription_id: string | null
+  mrr_override: number | null
+  last_payment: string | null
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -90,6 +98,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         await handleInvoicePaid(event.data.object as Stripe.Invoice)
         break
 
+      case 'charge.succeeded':
+        await handleChargeSucceeded(event.data.object as Stripe.Charge)
+        break
+
       case 'invoice.payment_failed':
         await handleInvoiceFailed(event.data.object as Stripe.Invoice)
         break
@@ -106,7 +118,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 }
 
 const CRM_WEBHOOK_COLUMNS =
-  'id, user_type, boardroom_subscription_status, cancellation_date, email, name, billing_channel, store_url, signup_date, notes, total_revenue_override, calculated_total_revenue, stripe_plan_amount, stripe_subscription_status'
+  'id, user_type, boardroom_subscription_status, cancellation_date, email, name, billing_channel, store_url, signup_date, notes, total_revenue_override, calculated_total_revenue, stripe_plan_amount, stripe_subscription_status, stripe_subscription_id, mrr_override, last_payment'
 
 async function findCrmByStripeId(stripeCustomerId: string): Promise<CrmRow | null> {
   const { data } = await supabaseAdmin
@@ -367,11 +379,14 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
       hasSuccessfulPayment: calculatedTotalRevenue > 0,
       hasShopifyRevenue: false,
     })
+    const paidCents = invoice.amount_paid
     const planAmount = customer?.stripe_plan_amount ?? stripeInvoicePlanAmount(invoice)
+    const isLatest = isLaterPayment(customer?.last_payment, stripeInvoicePaidAt(invoice))
     const calculatedMrr = calculateMrr({
       clientStatus,
       userType: customer?.user_type,
       stripePlanAmount: planAmount,
+      latestPaymentAmountCents: paidCents,
     })
 
     await supabaseAdmin
@@ -385,6 +400,91 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
               client_status: clientStatus,
               billing_channel: 'stripe',
               calculated_mrr: calculatedMrr,
+              mrr_override: null,
+              ...(isLatest && !customer?.stripe_subscription_id && paidCents > 0
+                ? { stripe_plan_amount: paidCents }
+                : {}),
+            }),
+      })
+      .eq('id', crmCustomerId)
+  }
+}
+
+async function handleChargeSucceeded(charge: Stripe.Charge) {
+  if (!isCollectedInvoiceLessCharge(charge) || !charge.id) return
+
+  const customerId = stripeCustomerIdFromCharge(charge)
+  const customer = customerId ? await findOrCreateCrmCustomer(customerId) : null
+  const crmCustomerId = customer?.id ?? null
+  const amount = collectedStripeChargeAmount(charge)
+  const alreadyRecorded = (await existingProviderTxnIds('stripe', [charge.id])).has(charge.id)
+  const paidAt = new Date(charge.created * 1000).toISOString()
+
+  const { error: txnErr } = await supabaseAdmin.from('crm_revenue_transactions').upsert(
+    {
+      provider: 'stripe',
+      provider_transaction_id: charge.id,
+      provider_customer_id: customerId,
+      provider_subscription_id: null,
+      crm_customer_id: crmCustomerId,
+      amount,
+      currency: (charge.currency ?? 'usd').toUpperCase(),
+      transaction_date: paidAt,
+      status: 'succeeded',
+      transaction_type: 'payment',
+      description: charge.description || `Charge ${charge.id}`,
+    },
+    { onConflict: 'provider,provider_transaction_id' }
+  )
+
+  if (!txnErr && crmCustomerId && !alreadyRecorded) {
+    await advanceLastPayments([
+      { customerId: crmCustomerId, paymentAt: paidAt, provider: 'stripe' },
+    ])
+  }
+
+  if (crmCustomerId) {
+    if (customerId) await attachOrphanStripeTransactions([customerId])
+    const ledgerTotal = await stripeLedgerTotal(crmCustomerId)
+    const calculatedTotalRevenue = nextCalculatedTotalRevenue({
+      existingCalculated: customer?.calculated_total_revenue,
+      existingOverride: customer?.total_revenue_override,
+      ledgerTotal,
+      newlyCollectedAmount: !alreadyRecorded ? amount : 0,
+    })
+    const clientStatus = determineClientStatus({
+      userType: customer?.user_type,
+      stripeSubscriptionStatus: customer?.stripe_subscription_status,
+      hasSuccessfulPayment: calculatedTotalRevenue > 0,
+      hasShopifyRevenue: false,
+    })
+    const paidCents = Math.round(amount * 100)
+    const isLatest = isLaterPayment(customer?.last_payment, paidAt)
+    const planAmount = customer?.stripe_subscription_id
+      ? customer.stripe_plan_amount
+      : isLatest
+        ? paidCents
+        : customer?.stripe_plan_amount
+    const calculatedMrr = calculateMrr({
+      clientStatus,
+      userType: customer?.user_type,
+      stripePlanAmount: planAmount,
+      latestPaymentAmountCents: paidCents,
+    })
+
+    await supabaseAdmin
+      .from('crm_customers')
+      .update({
+        calculated_total_revenue: calculatedTotalRevenue,
+        last_synced_at: new Date().toISOString(),
+        ...(customer?.billing_channel === 'shopify'
+          ? {}
+          : {
+              client_status: clientStatus,
+              billing_channel: 'stripe',
+              calculated_mrr: calculatedMrr,
+              mrr_override: null,
+              ...(isLatest && !customer?.stripe_subscription_id ? { stripe_plan_amount: paidCents } : {}),
             }),
       })
       .eq('id', crmCustomerId)

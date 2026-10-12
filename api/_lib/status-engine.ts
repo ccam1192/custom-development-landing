@@ -166,16 +166,20 @@ export function calculateMrr(input: {
   clientStatus: ClientStatus
   userType?: string | null
   stripePlanAmount?: number | null
+  latestPaymentAmountCents?: number | null
   billingChannel?: string | null
 }): number {
   if (input.clientStatus === 'canceled') return 0
   if (input.clientStatus === 'in_trial') return 0
   if (input.clientStatus === 'prospect') return 0
   if (input.clientStatus === 'agency_client') return 0
-  if (input.stripePlanAmount && input.stripePlanAmount > 0) {
-    return input.stripePlanAmount / 100
-  }
-  return 0
+  const amountCents =
+    input.stripePlanAmount && input.stripePlanAmount > 0
+      ? input.stripePlanAmount
+      : input.latestPaymentAmountCents && input.latestPaymentAmountCents > 0
+        ? input.latestPaymentAmountCents
+        : 0
+  return amountCents > 0 ? amountCents / 100 : 0
 }
 
 export interface StatusScenario {

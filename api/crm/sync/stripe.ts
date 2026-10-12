@@ -11,7 +11,13 @@ import {
   getAllStripeCustomers,
   getAllStripeSubscriptions,
   getPaidInvoices,
+  getCustomerCharges,
 } from '../../_lib/stripe.js'
+import {
+  collectedStripeChargeAmount,
+  isCollectedInvoiceLessCharge,
+  stripeCustomerIdFromCharge,
+} from '../../_lib/stripe-charges.js'
 import { advanceLastPayments, existingProviderTxnIds } from '../../_lib/last-payment.js'
 import { attachOrphanStripeTransactions, nextCalculatedTotalRevenue } from '../../_lib/revenue.js'
 
@@ -128,8 +134,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // Revenue per Stripe customer (calculated from invoices in memory)
+    // Revenue per Stripe customer (invoices + invoice-less charges)
     const revenueByCustomer = new Map<string, number>()
+    const latestPaymentByCustomer = new Map<string, { created: number; amountCents: number }>()
     for (const inv of invoices) {
       if (!inv.amount_paid || inv.amount_paid <= 0) continue
       const custId =
@@ -138,7 +145,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           : (inv.customer as { id: string } | null)?.id ?? null
       if (custId) {
         revenueByCustomer.set(custId, (revenueByCustomer.get(custId) ?? 0) + inv.amount_paid / 100)
+        const created = inv.status_transitions?.paid_at ?? inv.created
+        const prev = latestPaymentByCustomer.get(custId)
+        if (!prev || created > prev.created) {
+          latestPaymentByCustomer.set(custId, { created, amountCents: inv.amount_paid })
+        }
       }
+    }
+    const invoiceLessCharges: Awaited<ReturnType<typeof getCustomerCharges>> = []
+    const stripeIdsNeedingCharges = [
+      ...new Set(
+        existingCrm
+          .filter((c) => c.stripe_customer_id && c.billing_channel !== 'shopify')
+          .map((c) => c.stripe_customer_id as string)
+          .filter((id) => (revenueByCustomer.get(id) ?? 0) === 0)
+      ),
+    ]
+    for (let i = 0; i < stripeIdsNeedingCharges.length; i += 8) {
+      const slice = stripeIdsNeedingCharges.slice(i, i + 8)
+      const pages = await Promise.all(slice.map((id) => getCustomerCharges(id)))
+      for (const page of pages) {
+        for (const charge of page) {
+          if (!isCollectedInvoiceLessCharge(charge)) continue
+          invoiceLessCharges.push(charge)
+          const custId = stripeCustomerIdFromCharge(charge)
+          if (!custId) continue
+          const amount = collectedStripeChargeAmount(charge)
+          revenueByCustomer.set(custId, (revenueByCustomer.get(custId) ?? 0) + amount)
+          const prev = latestPaymentByCustomer.get(custId)
+          if (!prev || charge.created > prev.created) {
+            latestPaymentByCustomer.set(custId, {
+              created: charge.created,
+              amountCents: Math.round(amount * 100),
+            })
+          }
+        }
+      }
+    }
+    if (invoiceLessCharges.length > 0) {
+      console.log(
+        `[Stripe Sync] Loaded ${invoiceLessCharges.length} invoice-less charges for ${stripeIdsNeedingCharges.length} Stripe customers without invoices`
+      )
     }
 
     // ── Phase 4: Batch upsert revenue transactions ──
@@ -175,6 +222,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         status: 'succeeded',
         transaction_type: 'payment',
         description: `Invoice ${(inv as { number?: string }).number ?? inv.id}`,
+      })
+    }
+
+    for (const charge of invoiceLessCharges) {
+      if (!charge.id) continue
+      const custId = stripeCustomerIdFromCharge(charge)
+      const crmId = custId ? crmByStripeId.get(custId) ?? null : null
+      const paidAt = new Date(charge.created * 1000).toISOString()
+      paidAtByTxnId.set(charge.id, paidAt)
+      txnRows.push({
+        provider: 'stripe',
+        provider_transaction_id: charge.id,
+        provider_customer_id: custId,
+        provider_subscription_id: null,
+        crm_customer_id: crmId,
+        amount: collectedStripeChargeAmount(charge),
+        currency: (charge.currency ?? 'usd').toUpperCase(),
+        transaction_date: paidAt,
+        status: 'succeeded',
+        transaction_type: 'payment',
+        description: charge.description || `Charge ${charge.id}`,
       })
     }
 
@@ -360,8 +428,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           hasSuccessfulPayment: paid,
           hasShopifyRevenue: false,
         })
-        const calculatedMrr = calculateMrr({ clientStatus, stripePlanAmount: planAmount })
+        let latestPayment: { created: number; amountCents: number } | null = null
+        for (const sid of merged.allIds) {
+          const candidate = latestPaymentByCustomer.get(sid)
+          if (candidate && (!latestPayment || candidate.created > latestPayment.created)) {
+            latestPayment = candidate
+          }
+        }
+        const latestPaymentCents = latestPayment?.amountCents ?? null
+        const calculatedMrr = calculateMrr({
+          clientStatus,
+          stripePlanAmount: planAmount,
+          latestPaymentAmountCents: latestPaymentCents,
+        })
         record.calculated_mrr = calculatedMrr
+        if (merged.hasPayment) {
+          record.mrr_override = null
+          if (!planAmount && latestPaymentCents) {
+            record.stripe_plan_amount = latestPaymentCents
+          }
+        }
         if (merged.storeDomain && (!existingId || !crmStoreUrlById.get(existingId))) {
           record.store_url = `https://${merged.storeDomain}`
         }

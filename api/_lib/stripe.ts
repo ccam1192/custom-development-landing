@@ -100,6 +100,29 @@ export async function getPaidInvoices(since?: number): Promise<Stripe.Invoice[]>
   return invoices
 }
 
+/** Succeeded charges, including invoice-less PaymentIntent collections. */
+export async function getSucceededCharges(since?: number): Promise<Stripe.Charge[]> {
+  const stripe = getStripe()
+  const charges: Stripe.Charge[] = []
+  let hasMore = true
+  let startingAfter: string | undefined
+
+  while (hasMore) {
+    const params: Stripe.ChargeListParams = { limit: 100 }
+    if (startingAfter) params.starting_after = startingAfter
+    if (since) params.created = { gte: since }
+
+    const page = await stripe.charges.list(params)
+    charges.push(...page.data)
+    hasMore = page.has_more
+    if (page.data.length > 0) {
+      startingAfter = page.data[page.data.length - 1].id
+    }
+  }
+
+  return charges
+}
+
 /** Fetch charges for a specific customer */
 export async function getCustomerCharges(customerId: string): Promise<Stripe.Charge[]> {
   const stripe = getStripe()
