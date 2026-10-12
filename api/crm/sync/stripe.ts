@@ -136,7 +136,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Revenue per Stripe customer (invoices + invoice-less charges)
     const revenueByCustomer = new Map<string, number>()
-    const latestPaymentByCustomer = new Map<string, { created: number; amountCents: number }>()
     for (const inv of invoices) {
       if (!inv.amount_paid || inv.amount_paid <= 0) continue
       const custId =
@@ -145,11 +144,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           : (inv.customer as { id: string } | null)?.id ?? null
       if (custId) {
         revenueByCustomer.set(custId, (revenueByCustomer.get(custId) ?? 0) + inv.amount_paid / 100)
-        const created = inv.status_transitions?.paid_at ?? inv.created
-        const prev = latestPaymentByCustomer.get(custId)
-        if (!prev || created > prev.created) {
-          latestPaymentByCustomer.set(custId, { created, amountCents: inv.amount_paid })
-        }
       }
     }
     const invoiceLessCharges: Awaited<ReturnType<typeof getCustomerCharges>> = []
@@ -172,13 +166,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (!custId) continue
           const amount = collectedStripeChargeAmount(charge)
           revenueByCustomer.set(custId, (revenueByCustomer.get(custId) ?? 0) + amount)
-          const prev = latestPaymentByCustomer.get(custId)
-          if (!prev || charge.created > prev.created) {
-            latestPaymentByCustomer.set(custId, {
-              created: charge.created,
-              amountCents: Math.round(amount * 100),
-            })
-          }
         }
       }
     }
@@ -428,26 +415,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           hasSuccessfulPayment: paid,
           hasShopifyRevenue: false,
         })
-        let latestPayment: { created: number; amountCents: number } | null = null
-        for (const sid of merged.allIds) {
-          const candidate = latestPaymentByCustomer.get(sid)
-          if (candidate && (!latestPayment || candidate.created > latestPayment.created)) {
-            latestPayment = candidate
-          }
-        }
-        const latestPaymentCents = latestPayment?.amountCents ?? null
-        const calculatedMrr = calculateMrr({
-          clientStatus,
-          stripePlanAmount: planAmount,
-          latestPaymentAmountCents: latestPaymentCents,
-        })
+        const calculatedMrr = calculateMrr({ clientStatus, stripePlanAmount: planAmount })
         record.calculated_mrr = calculatedMrr
-        if (merged.hasPayment) {
-          record.mrr_override = null
-          if (!planAmount && latestPaymentCents) {
-            record.stripe_plan_amount = latestPaymentCents
-          }
-        }
         if (merged.storeDomain && (!existingId || !crmStoreUrlById.get(existingId))) {
           record.store_url = `https://${merged.storeDomain}`
         }

@@ -44,6 +44,12 @@ function assert(condition: unknown, message: string) {
 }
 
 {
+  const c = charge({ invoice: null, description: 'Payment for Invoice', amount: 250000 })
+  assert(!isCollectedInvoiceLessCharge(c), 'skip invoice payment charges')
+  console.log('PASS skip Payment for Invoice charges')
+}
+
+{
   const c = charge({ paid: false })
   assert(!isCollectedInvoiceLessCharge(c), 'unpaid skipped')
   console.log('PASS unpaid skipped')

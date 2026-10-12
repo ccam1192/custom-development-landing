@@ -3,7 +3,7 @@ import { supabaseAdmin } from '../_lib/supabase-admin.js'
 import { constructWebhookEvent, isStripeConfigured, getStripe } from '../_lib/stripe.js'
 import { determineClientStatus, calculateMrr } from '../_lib/status-engine.js'
 import { myshopifyDomainFromMetadata } from '../_lib/shopify-lifecycle.js'
-import { advanceLastPayments, existingProviderTxnIds, isLaterPayment } from '../_lib/last-payment.js'
+import { advanceLastPayments, existingProviderTxnIds } from '../_lib/last-payment.js'
 import {
   collectedStripeChargeAmount,
   isCollectedInvoiceLessCharge,
@@ -379,14 +379,11 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
       hasSuccessfulPayment: calculatedTotalRevenue > 0,
       hasShopifyRevenue: false,
     })
-    const paidCents = invoice.amount_paid
     const planAmount = customer?.stripe_plan_amount ?? stripeInvoicePlanAmount(invoice)
-    const isLatest = isLaterPayment(customer?.last_payment, stripeInvoicePaidAt(invoice))
     const calculatedMrr = calculateMrr({
       clientStatus,
       userType: customer?.user_type,
       stripePlanAmount: planAmount,
-      latestPaymentAmountCents: paidCents,
     })
 
     await supabaseAdmin
@@ -400,14 +397,24 @@ async function handleInvoicePaid(invoice: Stripe.Invoice) {
               client_status: clientStatus,
               billing_channel: 'stripe',
               calculated_mrr: calculatedMrr,
-              mrr_override: null,
-              ...(isLatest && !customer?.stripe_subscription_id && paidCents > 0
-                ? { stripe_plan_amount: paidCents }
-                : {}),
             }),
       })
       .eq('id', crmCustomerId)
   }
+}
+
+async function customerHasStripeInvoiceLedger(crmCustomerId: string): Promise<boolean> {
+  const { count, error } = await supabaseAdmin
+    .from('crm_revenue_transactions')
+    .select('*', { count: 'exact', head: true })
+    .eq('crm_customer_id', crmCustomerId)
+    .eq('provider', 'stripe')
+    .like('provider_transaction_id', 'in_%')
+  if (error) {
+    console.error('[Stripe webhook] invoice ledger check:', error.message)
+    return true
+  }
+  return (count ?? 0) > 0
 }
 
 async function handleChargeSucceeded(charge: Stripe.Charge) {
@@ -416,6 +423,7 @@ async function handleChargeSucceeded(charge: Stripe.Charge) {
   const customerId = stripeCustomerIdFromCharge(charge)
   const customer = customerId ? await findOrCreateCrmCustomer(customerId) : null
   const crmCustomerId = customer?.id ?? null
+  if (crmCustomerId && (await customerHasStripeInvoiceLedger(crmCustomerId))) return
   const amount = collectedStripeChargeAmount(charge)
   const alreadyRecorded = (await existingProviderTxnIds('stripe', [charge.id])).has(charge.id)
   const paidAt = new Date(charge.created * 1000).toISOString()
@@ -458,20 +466,6 @@ async function handleChargeSucceeded(charge: Stripe.Charge) {
       hasSuccessfulPayment: calculatedTotalRevenue > 0,
       hasShopifyRevenue: false,
     })
-    const paidCents = Math.round(amount * 100)
-    const isLatest = isLaterPayment(customer?.last_payment, paidAt)
-    const planAmount = customer?.stripe_subscription_id
-      ? customer.stripe_plan_amount
-      : isLatest
-        ? paidCents
-        : customer?.stripe_plan_amount
-    const calculatedMrr = calculateMrr({
-      clientStatus,
-      userType: customer?.user_type,
-      stripePlanAmount: planAmount,
-      latestPaymentAmountCents: paidCents,
-    })
-
     await supabaseAdmin
       .from('crm_customers')
       .update({
@@ -482,9 +476,6 @@ async function handleChargeSucceeded(charge: Stripe.Charge) {
           : {
               client_status: clientStatus,
               billing_channel: 'stripe',
-              calculated_mrr: calculatedMrr,
-              mrr_override: null,
-              ...(isLatest && !customer?.stripe_subscription_id ? { stripe_plan_amount: paidCents } : {}),
             }),
       })
       .eq('id', crmCustomerId)
