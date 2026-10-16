@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { motion } from 'framer-motion'
 import HubSpotForm from '../components/HubSpotForm'
 import { usePageMeta } from '../hooks/usePageMeta'
+import { Users, FileText, Rocket } from 'lucide-react'
 
 const PAGE_URL = 'https://lp.ecommboardroom.com/accounting-firms/book-a-call'
 const PAGE_TITLE = 'Book a Conversation | Accounting Firm Technology Partner | Boardroom'
@@ -11,10 +12,32 @@ const PAGE_DESCRIPTION =
 /** Campaign form — distinct from the general /book-a-call HubSpot form. */
 const ACCOUNTING_FORM_ID = 'c34f4b59-48f5-4fa9-a966-280acecc18ac'
 
-const HEADLINE = 'Your Clients Need Custom Software. You Don’t Need to Build It Yourself.'
+const HEADLINE =
+  "Turn your clients' spreadsheet problems into a new service line. We build it, you keep the relationship."
 
 const DESCRIPTION =
-  'You’re often the person who sees where a client’s spreadsheets, manual workflows, and disconnected systems are holding them back. Bring us into the conversation and we’ll help you explore whether custom software could solve the problem—and how we could work together to deliver it.'
+  'You see where their manual workflows are holding them back. Partner with us to deliver custom software solutions—without building a dev team.'
+
+const REASSURANCE =
+  "Not sure if custom software is right for your client? That's exactly what the conversation is for. We'll talk through the situation, determine whether a custom solution makes sense, and give you an honest assessment of what's involved."
+
+const processSteps = [
+  {
+    icon: Users,
+    title: 'You spot the problem',
+    description: 'You notice where spreadsheets, manual workflows, or disconnected systems are limiting your client.',
+  },
+  {
+    icon: FileText,
+    title: 'We scope it together',
+    description: 'You bring us into the conversation. We work with you and your client to understand the need.',
+  },
+  {
+    icon: Rocket,
+    title: 'We build & support it',
+    description: 'We deliver the solution and provide ongoing support. You stay the trusted advisor.',
+  },
+]
 
 export default function AccountingFirmsBookPage() {
   usePageMeta({
@@ -53,7 +76,7 @@ export default function AccountingFirmsBookPage() {
         <div className="book-a-call-grid absolute inset-0 opacity-[0.35]" />
       </div>
 
-      <main className="relative z-10 flex flex-1 flex-col justify-center px-4 py-12 sm:px-6 sm:py-16 lg:px-8 lg:py-20">
+      <main className="relative z-10 flex flex-1 flex-col px-4 py-12 sm:px-6 sm:py-16 lg:px-8 lg:py-20">
         <div className="mx-auto w-full max-w-[780px]">
           <motion.div
             initial={{ opacity: 0, y: 24 }}
@@ -75,6 +98,34 @@ export default function AccountingFirmsBookPage() {
           </motion.div>
 
           <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.1, ease: 'easeOut' }}
+            className="mx-auto w-full max-w-[640px] mb-8"
+          >
+            <div className="rounded-xl border border-gray-200/80 bg-white/95 p-5 sm:p-6 shadow-sm">
+              <h3 className="text-sm font-semibold text-gray-900 text-center mb-5">
+                How We Work
+              </h3>
+              <div className="grid gap-4 sm:grid-cols-3">
+                {processSteps.map((step) => (
+                  <div key={step.title} className="flex flex-col items-center text-center">
+                    <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                      <step.icon size={20} />
+                    </div>
+                    <h4 className="text-sm font-semibold text-gray-900 mb-1.5">
+                      {step.title}
+                    </h4>
+                    <p className="text-xs text-gray-600 leading-relaxed">
+                      {step.description}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+
+          <motion.div
             id="conversion-form-section"
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -84,10 +135,23 @@ export default function AccountingFirmsBookPage() {
           >
             <div className="glass rounded-2xl border border-gray-200/80 bg-white/90 p-6 shadow-lg shadow-gray-200/40 sm:p-8">
               <h2 className="text-lg sm:text-xl font-semibold text-gray-900 text-center mb-6">
-                Let's work together.
+                See if your client's problem is a fit (15-min call)
               </h2>
               <HubSpotForm formId={ACCOUNTING_FORM_ID} />
             </div>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.5, delay: 0.35 }}
+            className="mx-auto mt-8 max-w-xl text-center"
+          >
+            <p className="text-sm text-gray-500 leading-relaxed">{REASSURANCE}</p>
+            <p className="mt-5 text-xs text-gray-400 tracking-wide">
+              10+ years of enterprise software implementation experience · 1,300+ businesses
+              served
+            </p>
           </motion.div>
         </div>
       </main>
